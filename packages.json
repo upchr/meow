@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-13T14:08:53Z",
+  "author": { "name": "meow", "url": "https://github.com/upchr/meow" },
+  "min_app_version": "0.6.0",
+  "source_tag": "release-v1.2.7",
+  "packages": {
+    "meow-pc": {
+      "display_name": "PC 安装包",
+      "version": "1.2.7",
+      "platform": ["windows-x64"],
+      "desc": "1. 修复网络差时「检查更新」一直转圈、加速线路被跳过的问题\n2. 电视上模块与弹幕检查不再卡住页面，最多等 25 秒给结论\n3. 更新检查不再重复下载已是最新的模块与弹幕组件",
+      "size": 5720703,
+      "sha256": "e3a7252aaac4bfafc841c4a77bad0340d10d6330590a91bf64a4f53c84a05088",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/meow-setup-1.2.7.exe",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-13"
+    },
+    "meow-tv": {
+      "display_name": "TV 安装包",
+      "version": "1.2.7",
+      "platform": ["android-arm64","android-armv7","android-x86_64"],
+      "desc": "1. 修复网络差时「检查更新」一直转圈、加速线路被跳过的问题\n2. 电视上模块与弹幕检查不再卡住页面，最多等 25 秒给结论\n3. 更新检查不再重复下载已是最新的模块与弹幕组件",
+      "size": 21430816,
+      "sha256": "eba8f24f7c551186008479159380e6a27b33ff681232fd0b6491358b960c5702",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/meow-TV-1.2.7.apk",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-13"
+    },
+    "apiserver": {
+      "display_name": "apiserver 安装包",
+      "version": "1.2.7",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 apiserver 1.1.6",
+      "size": 50475414,
+      "sha256": "5d8713d9c96620c1bc481d91ce0e5b4ef692a2e0091941cb8af89f09079d3bee",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/apiserver-1.2.7.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-13"
+    },
+    "tv-node-arm64-v8a": {
+      "display_name": "tv-node-arm64-v8a 安装包",
+      "version": "18.20.4.1",
+      "platform": ["android-arm64-v8a"],
+      "desc": "TV 运行时模块 arm64-v8a 18.20.4.1",
+      "size": 52116312,
+      "sha256": "53f59d4815a27fc3f989e4ddbe8f6cf1ebcdfdb2e30f4ffd835527426d8469d4",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/tv-node-arm64-v8a-18.20.4.1.apk",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-10"
+    },
+    "tv-node-armeabi-v7a": {
+      "display_name": "tv-node-armeabi-v7a 安装包",
+      "version": "18.20.4.1",
+      "platform": ["android-armeabi-v7a"],
+      "desc": "TV 运行时模块 armeabi-v7a 18.20.4.1",
+      "size": 47942310,
+      "sha256": "4a03d317048b96bc8aba43ed473e557b72ee35b12821d837d952dbc176a18075",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/tv-node-armeabi-v7a-18.20.4.1.apk",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-10"
+    },
+    "tv-node-x86_64": {
+      "display_name": "tv-node-x86_64 安装包",
+      "version": "18.20.4.1",
+      "platform": ["android-x86_64"],
+      "desc": "TV 运行时模块 x86_64 18.20.4.1",
+      "size": 56644983,
+      "sha256": "40422498b25370787a9caadb7f407c2953890a2e5a327fca1624da23d52b3fc7",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/tv-node-x86_64-18.20.4.1.apk",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-10"
+    },
+    "danmu-api": {
+      "display_name": "danmu-api 安装包",
+      "version": "1.0.0",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 danmu-api 1.0.0",
+      "size": 11431696,
+      "sha256": "d7068558f002262659b4cba967d5a5a38114ac311f3638cbbd2a17fce2ba5e2f",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/danmu-api-1.0.0.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-13"
+    },
+    "drpy": {
+      "display_name": "drpy 安装包",
+      "version": "0.1.0",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 drpy 0.1.0",
+      "size": 4027646,
+      "sha256": "7c40197148a4b62dfb41817e9162daf40c4b7c9eb91f80bdc579ddcff3e70029",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/drpy-0.1.0.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-13"
+    },
+    "ffmpeg": {
+      "display_name": "ffmpeg 安装包",
+      "version": "9.0.2",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 ffmpeg 9.0.2",
+      "size": 38867862,
+      "sha256": "99b8e8b1837809b7bc45d13b2445105b5ab96ee3ac6f6bbf00be843dda77c55b",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/ffmpeg-9.0.2.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-13"
+    },
+    "node": {
+      "display_name": "node 安装包",
+      "version": "22.23.4",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 node 22.23.4",
+      "size": 33192218,
+      "sha256": "164c30d82a0787bbea23360f9d69f8ca098fa837b7daa1d5370f26fdde998e93",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/node-22.23.4.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-13"
+    },
+    "danmu-payload": {
+      "display_name": "弹幕组件",
+      "version": "1.0.0",
+      "platform": ["android"],
+      "desc": "猫窝弹幕组件 1.0.0",
+      "size": 11431696,
+      "sha256": "d7068558f002262659b4cba967d5a5a38114ac311f3638cbbd2a17fce2ba5e2f",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/danmu-api-1.0.0.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-13"
+    }
+  }
+}
