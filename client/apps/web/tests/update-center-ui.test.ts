@@ -321,3 +321,41 @@ describe('更新检查与设置页的性能护栏', () => {
     expect(hits, '这些文件还在无限等待：' + hits.join(', ')).toEqual([])
   })
 })
+
+/**
+ * 「稍后」的语义边界（2026-11-13 .77 真机踩到）。
+ *
+ * 现象：用户按电视返回键想先看一眼别的页面，结果这个版本被永久标记成
+ * 「稍后」，之后每次检查都显示「已是最新」，再也收不到 1.2.7 的提示。
+ * 根因：遮罩点击 / Esc / 电视返回统统走了 `onLater()`（记忆版本）。
+ *
+ * 锁三条：
+ *   1. 只有「稍后」按钮带 skip；
+ *   2. 遮罩 / Esc / 返回走 onDismiss（只关不记）；
+ *   3. 已跳过的版本在更新中心如实显示「已跳过」，不冒充「已是最新」。
+ */
+describe('「稍后」只在显式点击时记住版本', () => {
+  const DIALOG = join(ROOT, 'client', 'apps', 'web', 'src', 'components', 'common', 'UpdateDialog.vue')
+  const STORE = join(ROOT, 'client', 'apps', 'web', 'src', 'stores', 'appUpdate.ts')
+  const CENTER = join(ROOT, 'client', 'apps', 'web', 'src', 'components', 'common', 'UpdateCenter.vue')
+  const dialog = readFileSync(DIALOG, 'utf8')
+  const store = readFileSync(STORE, 'utf8')
+  const center = readFileSync(CENTER, 'utf8')
+
+  it('store：只有 opts.skip 才记版本', () => {
+    expect(store).toContain('if (opts.skip && !error.value) rememberSkip()')
+    // 旧写法（无条件记）不能再出现
+    expect(store).not.toContain('  if (!error.value) rememberSkip()')
+  })
+
+  it('弹框：稍后按钮带 skip，遮罩/返回只关不记', () => {
+    expect(dialog).toContain("if (closeDialog({ skip: true })) emit('close')")
+    expect(dialog).toContain('@click.self="onDismiss"')
+    expect(dialog).toContain('    onDismiss()\n    return true')
+    expect(dialog).not.toContain('@click.self="onLater"')
+  })
+
+  it('更新中心：跳过的版本显示「已跳过」而不是「已是最新」', () => {
+    expect(center).toContain('isVersionSkipped(v) ? `已跳过 v${v}`')
+  })
+})

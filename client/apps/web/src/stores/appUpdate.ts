@@ -129,8 +129,10 @@ export async function runCheck(opts: { silent?: boolean } = {}): Promise<AppUpda
   else error.value = ''
   try {
     const up = await checkAppUpdate()
-    // 用户说过「这个版本稍后」：静默检查不再打扰，手动检查照常显示
+    // 用户说过「这个版本稍后」：静默检查不弹框，但**仍记下发现** ——
+    // 否则更新中心会把「已跳过」显示成「已是最新」，用户以为真没新版。
     if (up && opts.silent && isVersionSkipped(up.version)) {
+      found.value = up
       checked.value = true
       return null
     }
@@ -272,14 +274,19 @@ export function rememberSkip(): void {
 }
 
 /**
- * 关弹框（并记住稍后）。
+ * 关弹框。
+ *
+ * <p><b>只有显式「稍后」才记住版本</b>（`skip: true`）。点空白、按 Esc、
+ * 电视按返回都不算表态 —— 以前它们统统调用 rememberSkip，于是"想先看一眼
+ * 别的页面"就把这个版本永久标记成稍后：之后每次检查都显示「已是最新」，
+ * 用户再也收不到更新（2026-11-13 .77 实测踩到，skip=1.2.7）。
  *
  * <p>下载中不许关：任务是原生侧常驻的，关掉会让用户以为停了，
  * 然后又在设置页看到进度还在涨。返回 false 表示"这次没关成"。
  */
-export function closeDialog(): boolean {
+export function closeDialog(opts: { skip?: boolean } = {}): boolean {
   if (busy.value && !ready.value) return false
-  if (!error.value) rememberSkip()
+  if (opts.skip && !error.value) rememberSkip()
   dialogOpen.value = false
   // 关掉就算处理过了：不清的话路由 watcher 会看到"待提示"又弹回来
   promptPending.value = false

@@ -104,6 +104,7 @@ public final class AppUpdater {
             return null;
         }
         String u = url.trim();
+        android.util.Log.i("MeowUpd", "manifest get " + u);
         if (!u.startsWith("http://") && !u.startsWith("https://")) {
             // 只认 http(s)：file:// 与自定义协议在 TV 上没有正当用途，
             // 且容易成为"读任意文件"的入口。
@@ -165,16 +166,24 @@ public final class AppUpdater {
         final Object lock = new Object();
         for (final String u : urls) {
             Thread t = new Thread(() -> {
+                long t0 = System.currentTimeMillis();
                 try {
                     String text = fetchManifest(u, token);
-                    if (text == null || !text.contains("\"packages\"")) return;
+                    boolean hit = text != null && text.contains("\"packages\"");
+                    // 诊断：每条候选的成败与耗时都落日志。踩过「加速开着却只试直连」，
+                    // 当时一行日志都没有，只能靠猜（2026-11-13 .77 实测）。
+                    android.util.Log.i("MeowUpd", "cand " + (hit ? "ok" : "bad") + " "
+                            + (System.currentTimeMillis() - t0) + "ms " + u);
+                    if (!hit) return;
                     synchronized (lock) {
                         if (box[0] == null) {
                             box[0] = text;
                             lock.notifyAll();
                         }
                     }
-                } catch (Throwable ignored) {
+                } catch (Throwable e) {
+                    android.util.Log.i("MeowUpd", "cand err " + (System.currentTimeMillis() - t0)
+                            + "ms " + u + " :: " + e.getMessage());
                 }
             }, "meow-manifest-race");
             t.setDaemon(true);

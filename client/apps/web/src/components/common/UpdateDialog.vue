@@ -115,7 +115,12 @@ function onSecondary(): void {
 
 /** 「稍后」= 记住这个版本 + 关闭（下载中会被 store 拒绝） */
 function onLater(): void {
-  // 关成功了才发 close：下载中关不掉，发出去父组件会误以为已收
+  // 只有这个按钮算「表态」：记住版本，下次只有更高版本才提示
+  if (closeDialog({ skip: true })) emit('close')
+}
+
+/** 点空白 / Esc / 电视返回：只关，不记住版本 */
+function onDismiss(): void {
   if (closeDialog()) emit('close')
 }
 
@@ -134,7 +139,7 @@ function measureNotes(): void {
 function onKey(e: KeyboardEvent): void {
   if (e.key === 'Escape' || e.key === 'Backspace') {
     e.preventDefault()
-    onLater()
+    onDismiss()
   }
 }
 
@@ -157,8 +162,9 @@ function takeOverBackKey(): void {
   prevBackHandler = w.__meowTvConsumeBack || null
   w.__meowTvConsumeBack = () => {
     // 先关弹框；下载中关不掉也吃掉这次返回 —— 否则事件落到下面，
-    // 用户会看到"按返回没反应，但播放器面板被关掉了"
-    onLater()
+    // 用户会看到"按返回没反应，但播放器面板被关掉了"。
+    // 返回键只是"先不看"，不等于「稍后」—— 不能记住版本（踩过：skip=1.2.7）。
+    onDismiss()
     return true
   }
 }
@@ -212,12 +218,13 @@ watch(phase, (v) => {
 
 <template>
   <!--
-    遮罩 click.self 也走「稍后」：鼠标用户点空白处期望关掉。
-    下载中 onLater 会自己拒绝，所以这里不用再判。
+    遮罩 click.self 只是"关掉看看"，**不算「稍后」**：记住版本会让这个版本
+    之后再也不提示（踩过 skip=1.2.7 导致「检查更新永远已是最新」）。
+    下载中 onDismiss 会自己拒绝，所以这里不用再判。
   -->
   <div
     class="fixed inset-0 z-[130] grid place-items-center bg-black/60 px-5 py-8"
-    @click.self="onLater"
+    @click.self="onDismiss"
   >
     <!-- data-tv-scope：tv-nav 据此把焦点收窄到弹框内 -->
     <div

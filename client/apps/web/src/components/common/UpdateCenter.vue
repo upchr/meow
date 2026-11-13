@@ -21,6 +21,7 @@ import {
   platform as updPlatform,
   runCheck as runUpdCheck,
 } from '@/stores/appUpdate'
+import { isVersionSkipped } from '@/api/appUpdate'
 import {
   checkFpk,
   checkModule,
@@ -81,7 +82,11 @@ const fpkFound = computed(() => !!fpkLatest.value)
 
 const appLabel = computed(() => {
   if (updChecking.value) return '检查中…'
-  if (appFound.value) return `发现 v${updFound.value?.version}`
+  if (appFound.value) {
+    const v = updFound.value?.version || ''
+    // 「稍后」过的版本要如实说，别冒充「已是最新」
+    return isVersionSkipped(v) ? `已跳过 v${v}` : `发现 v${v}`
+  }
   if (updChecked.value) return '已是最新'
   return '未检查'
 })
