@@ -1,0 +1,81 @@
+{
+  "schema_version": "2",
+  "source_info": {
+    "name": "Meow main mirror",
+    "url": "https://github.com/upchr/meow"
+  },
+  "apps": {
+    "meow": {
+      "releases": {
+        "1.2.4": {
+          "changelog": "1. 应用更新按钮改名「更新」：点一下下载完直接调起安装器\n2. 修复电视上「更新源」输入框点不进去、填了也存不上的问题",
+          "updated_at": "2026-11-13T04:36:19Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/fpk-v1.2.4/meow_1.2.4_x86.fpk",
+              "sha256": "65831e0831e95aa504fbbd6fb7977a230a67d652f89b6ca4bf2fc57884c10973",
+              "size": 39555443
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/fpk-v1.2.4/meow_1.2.4_arm.fpk",
+              "sha256": "b4cc277814b8b2c18276087c60e1ce4a263e2ff818c9633084dccaaf1fc3510b",
+              "size": 39514086
+            }
+          }
+        },
+        "1.2.5": {
+          "changelog": "1. 电视上「更新源」改成和搜索框一样直接输入，不再弹对话框",
+          "updated_at": "2026-11-13T06:41:24Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.5/meow_1.2.5_x86.fpk",
+              "sha256": "2fa7b113f2eb2b8ec041119824b396f12fb8cdafea588eae198560ad0f1ab02a",
+              "size": 39547220
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.5/meow_1.2.5_arm.fpk",
+              "sha256": "ad3f26016dc827f116c13a27a8c4bf2739e756316f03d7f23b41fdf4010c136d",
+              "size": 39514553
+            }
+          }
+        },
+        "1.2.6": {
+          "changelog": "1. 修复电视上「运行时模块」点检查更新必定下载失败的问题\n2. 电视模块与弹幕组件已是最新时，不再重复下载安装包\n3. 电视拉模块清单优先走可用的加速线路，弱网也能检查成功\n4. 内置更新源改为主仓正式发布地址，弱网环境更稳定",
+          "updated_at": "2026-11-13T11:36:55Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.6/meow_1.2.6_x86.fpk",
+              "sha256": "d867b7506f3a58f3f0c3bff908f88a04cca45a84acfe4c9b49aff2d92eea9478",
+              "size": 39552382
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.6/meow_1.2.6_arm.fpk",
+              "sha256": "ba40dbf325d41855d89f543391f3659aac900b39b2fc735bad6e19be63e6b301",
+              "size": 39514930
+            }
+          }
+        },
+        "1.2.7": {
+          "changelog": "1. 修复网络差时「检查更新」一直转圈、加速线路被跳过的问题\n2. 电视上模块与弹幕检查不再卡住页面，最多等 25 秒给结论\n3. 更新检查不再重复下载已是最新的模块与弹幕组件",
+          "updated_at": "2026-11-13T14:08:19Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/meow_1.2.7_x86.fpk",
+              "sha256": "37d1ec08984211c7a9cde93b8b98136b793f25a96d725c3c348ccfecd860057a",
+              "size": 39557939
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/meow_1.2.7_arm.fpk",
+              "sha256": "8904a1bb75938739b53ef0ecb425f6316a40b24157dbf449aad8cf3fea6da458",
+              "size": 39517185
+            }
+          }
+        }
+      }
+    }
+  }
+}
