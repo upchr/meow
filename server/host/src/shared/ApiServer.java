@@ -538,7 +538,7 @@ public class ApiServer {
      */
     private static final int PARSE_TIMEOUT_MS = 15_000;
     /** 后端版本；健康检查与前端能力协商用。 */
-    public static final String VERSION = "1.2.7";
+    public static final String VERSION = "1.2.8";
     /** 进程启动时间（毫秒），用于 uptime。 */
     private static volatile long STARTED_AT = 0;
 

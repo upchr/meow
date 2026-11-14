@@ -1,6 +1,6 @@
 [package]
 name = "meowd"
-version = "1.2.7"
+version = "1.2.8"
 edition = "2021"
 description = "猫窝 Meow fnOS 无头壳：静态托管 + /api 反代 + Java 后端守护"
 license = "MIT"

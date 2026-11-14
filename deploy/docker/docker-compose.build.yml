@@ -36,7 +36,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.apiserver
-    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-1.2.7}}
+    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-1.2.8}}
     container_name: meow-apiserver
     ports:
       # 默认只绑本机。要给 TV/局域网直连，改 APISERVER_BIND=0.0.0.0。
@@ -67,7 +67,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.web
-    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-1.2.7}}
+    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-1.2.8}}
     container_name: meow-web
     ports:
       - "${WEB_PORT:-30010}:8080"
@@ -83,7 +83,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.drpy
-    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${MEOW_VERSION:-1.2.7}}
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${MEOW_VERSION:-1.2.8}}
     container_name: meow-drpy
     ports:
       - "${DRPY_PORT:-30013}:9330"

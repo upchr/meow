@@ -63,8 +63,8 @@ android {
         minSdk 26
         targetSdk 34
         // 与主版本对齐（AGENTS §4.1 的六处版本号之外，TV 是第七处）
-        versionCode 1207
-        versionName '1.2.7'
+        versionCode 1208
+        versionName '1.2.8'
         // 默认指向宿主机上的 Web 容器；电视上第一次跑请用 intent extra 覆盖：
         //   adb shell am start -n com.meow.tv/.MainActivity --es url http://192.168.1.2:30010
         buildConfigField 'String', 'DEFAULT_URL', '"http://10.0.2.2:30010"'

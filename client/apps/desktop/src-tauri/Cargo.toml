@@ -1,6 +1,6 @@
 [package]
 name = "meow-player"
-version = "1.2.7"
+version = "1.2.8"
 description = "影视仓 Web/PC 客户端"
 authors = ["meow"]
 license-file = "../../../../LICENSE"
