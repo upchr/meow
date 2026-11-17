@@ -1,0 +1,68 @@
+name: Meow
+
+options:
+  bundleIdPrefix: com.meow.player
+  deploymentTarget:
+    iOS: '15.0'
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    MARKETING_VERSION: '0.0.0'
+    CURRENT_PROJECT_VERSION: '1'
+
+targets:
+  Meow:
+    type: application
+    platform: iOS
+    sources:
+      - path: Meow
+        excludes:
+          - Web
+          - Info.plist
+      - path: Meow/Web
+        type: folder
+        buildPhase: resources
+    info:
+      path: Meow/Info.plist
+      properties:
+        CFBundleDisplayName: 猫窝
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: '6.0'
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        LSRequiresIPhoneOS: true
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: 用于连接局域网内的猫窝后端
+        UIApplicationSupportsIndirectInputEvents: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        'UISupportedInterfaceOrientations~ipad':
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.meow.player.ios
+        PRODUCT_NAME: Meow
+        TARGETED_DEVICE_FAMILY: '1,2'
+        GENERATE_INFOPLIST_FILE: NO
+
+schemes:
+  Meow:
+    build:
+      targets:
+        Meow: all
+    run:
+      config: Debug

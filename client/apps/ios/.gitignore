@@ -1,0 +1,8 @@
+# 构建产物（都不入库）
+Meow/Web/
+Meow/Info.plist
+Meow.xcodeproj/
+build/
+build-sim/
+out/
+*.ipa

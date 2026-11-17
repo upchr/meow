@@ -1,0 +1,188 @@
+# 最小 iOS 壳：构建未签名 IPA + 模拟器截图。
+#
+# 只做冒烟，不建 Release、不写 packages.json、不碰 FnDepot。
+# 触发：workflow_dispatch，或推送 ios-v* / ipa-v* tag（不跟主 release 链）。
+
+name: ios
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'ios-v[0-9]*'
+      - 'ipa-v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    name: iOS IPA（未签名）
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: 构建 web dist
+        working-directory: client
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm --filter @meow/web build
+
+      - name: 拷入内嵌前端
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf client/apps/ios/Meow/Web
+          mkdir -p client/apps/ios/Meow/Web
+          cp -R client/apps/web/dist/. client/apps/ios/Meow/Web/
+          test -f client/apps/ios/Meow/Web/index.html
+          du -sh client/apps/ios/Meow/Web
+
+      - name: 安装 XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: 生成 Xcode 工程
+        working-directory: client/apps/ios
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          ls -la Meow.xcodeproj
+
+      - name: 读版本号
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          V=$(node -p "require('./client/package.json').version")
+          CODE=$(echo "$V" | awk -F. '{printf "%d", $1*1000+$2*100+$3}')
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "version=$V code=$CODE"
+
+      - name: 构建 device（未签名）
+        working-directory: client/apps/ios
+        shell: bash
+        env:
+          V: ${{ steps.v.outputs.version }}
+          CODE: ${{ steps.v.outputs.code }}
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Meow.xcodeproj \
+            -scheme Meow \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            MARKETING_VERSION="$V" \
+            CURRENT_PROJECT_VERSION="$CODE" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: 打未签名 IPA
+        working-directory: client/apps/ios
+        shell: bash
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          APP=build/Build/Products/Release-iphoneos/Meow.app
+          test -d "$APP"
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          (cd out && zip -qry "meow-iOS-${V}-unsigned.ipa" Payload)
+          ls -lh out/
+
+      - name: 自检（版本串 + 内嵌 Web + 无源包）
+        working-directory: client/apps/ios
+        shell: bash
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          IPA="out/meow-iOS-${V}-unsigned.ipa"
+          unzip -l "$IPA" | grep -q 'Payload/Meow.app/Info.plist'
+          unzip -l "$IPA" | grep -q 'Payload/Meow.app/Web/index.html'
+          unzip -p "$IPA" 'Payload/Meow.app/Info.plist' > /tmp/Meow-Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /tmp/Meow-Info.plist \
+            | grep -qx "$V"
+          ! unzip -l "$IPA" | grep -Eq 'spider.*\.jar|config\.sites\.json|node-payload-danmu\.zip'
+
+      - name: 上传 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: client/apps/ios/out/*.ipa
+          if-no-files-found: error
+
+      - name: 构建模拟器版本
+        working-directory: client/apps/ios
+        shell: bash
+        env:
+          V: ${{ steps.v.outputs.version }}
+          CODE: ${{ steps.v.outputs.code }}
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Meow.xcodeproj \
+            -scheme Meow \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build-sim \
+            MARKETING_VERSION="$V" \
+            CURRENT_PROJECT_VERSION="$CODE" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: 模拟器启动并截图
+        working-directory: client/apps/ios
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=build-sim/Build/Products/Release-iphonesimulator/Meow.app
+          test -d "$APP"
+
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for v in d.values() for x in v if x.get("isAvailable") and "iPhone" in x.get("name","")))')
+          echo "simulator=$DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID" || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          xcrun simctl install "$DEVICE_ID" "$APP"
+          xcrun simctl launch "$DEVICE_ID" com.meow.player.ios
+          sleep 8
+          xcrun simctl io "$DEVICE_ID" screenshot ios-screenshot.png
+          ls -lh ios-screenshot.png
+
+      - name: 上传截图
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-screenshot
+          path: client/apps/ios/ios-screenshot.png
+          if-no-files-found: error
