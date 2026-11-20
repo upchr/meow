@@ -350,6 +350,18 @@ describe('fnOS 网关身份与本地片库目录树（2026-11-20）', () => {
     expect(dlg).toContain('MEOW_LIBRARY_ROOTS')
   })
 
+  it('JVM 必须设 sun.jnu.encoding + UTF-8 locale（否则中文目录全抛 Malformed input）', () => {
+    const sup = repo('client/apps/fnos/meowd/src/supervisor.rs')
+    expect(sup).toContain('sun.jnu.encoding')
+    expect(sup).toContain('C.UTF-8')
+  })
+
+  it('网络挂载的根用共享名做 label（//host/视频 → 视频，不是内部卷名）', () => {
+    const roots = repo('server/host/src/shared/core/LibraryRoots.java')
+    expect(roots).toContain('mountLabel')
+    expect(roots).toContain('/proc/mounts')
+  })
+
   it('wizard_library_mode 不再是死选项', () => {
     const cb = repo('client/apps/fnos/fpk/cmd/install_callback')
     expect(cb).toContain('wizard_library_mode')

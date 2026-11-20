@@ -205,6 +205,15 @@ fn spawn_api(cfg: &Config, java: &Path) -> anyhow::Result<Child> {
         .arg("-Xms64m")
         .arg("-Xmx512m")
         .arg("-Dfile.encoding=UTF-8")
+        /*
+         * ★ 必须同时设 sun.jnu.encoding：它才是 java.nio.file.Paths 把 String
+         * 转成文件名字节时用的字符集。fnOS 的 cmd/main 起进程时不带 locale
+         * （LANG 未设 → POSIX/C），JVM 会退到 ANSI_X3.4-1968，于是
+         * `Path.of("电影")` 直接抛 "Malformed input or input contains
+         * unmappable characters" —— 实测片库目录树里所有中文目录都点不进去。
+         * Docker 侧的 JAVA_OPTS 早就设了这一个，fpk 这边漏了。
+         */
+        .arg("-Dsun.jnu.encoding=UTF-8")
         .arg("-cp")
         // 插件清单里的分号是 Windows 写法；Linux 的 classpath 分隔符是冒号。
         // 加平台判断只为了在 Windows 上能本地验证这条链路，生产路径仍是冒号。
@@ -214,6 +223,15 @@ fn spawn_api(cfg: &Config, java: &Path) -> anyhow::Result<Child> {
         .arg(format!("--data-dir={}", cfg.data_dir.display()))
         .env("MEOW_BIND", &cfg.api_bind)
         .env("MEOW_INSTANCE_ID", format!("meow@{}", cfg.pkg_var.display()))
+        /*
+         * fnOS 的 cmd/main 不设 locale（LANG 未定义 → POSIX/C）。JVM 会把
+         * sun.jnu.encoding 推成 ANSI_X3.4-1968，中文文件名直接抛
+         * "Malformed input or input contains unmappable characters"。
+         * -D 之外再钉一次环境变量：部分 JDK 会忽略 -Dsun.jnu.encoding 而以
+         * locale 为准（实测 Java 21 两者都要）。
+         */
+        .env("LANG", "C.UTF-8")
+        .env("LC_ALL", "C.UTF-8")
         /*
          * fnOS 的授权目录只注入到 meowd 这一层，Java 子进程默认读不到。
          * 用户在「应用设置 → 访问权限」里勾的文件夹走 TRIM_DATA_ACCESSIBLE_PATHS，

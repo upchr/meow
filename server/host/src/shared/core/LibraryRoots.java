@@ -201,6 +201,8 @@ public final class LibraryRoots {
     }
 
     private static String labelOf(String path) {
+        String mounted = mountLabel(path);
+        if (!mounted.isEmpty()) return mounted;
         try {
             Path p = Paths.get(path);
             Path name = p.getFileName();
@@ -208,6 +210,34 @@ public final class LibraryRoots {
         } catch (Throwable t) {
             return path;
         }
+    }
+
+    /**
+     * 网络挂载点的显示名：`//192.168.1.19/视频` → {@code 视频}。
+     *
+     * <p>为什么需要：fnOS 的「远程挂载」在 {@code TRIM_DATA_ACCESSIBLE_PATHS} 里给的是
+     * **内部卷名**（如 {@code /vol02/1000-0-a4d36b4c}），而用户在授权界面看到的是
+     * 「远程挂载/视频」。直接用目录名，左栏会显示一串哈希，用户认不出那是什么。
+     *
+     * <p>只对网络挂载（cifs 的 `//host/share`、nfs 的 `host:/export`）取末段；
+     * 本地块设备（`/dev/sda1`）不取，否则整卷会显示成 "sda1"。
+     */
+    private static String mountLabel(String path) {
+        try {
+            for (String line : Files.readAllLines(Paths.get("/proc/mounts"))) {
+                String[] f = line.split("\\s+");
+                if (f.length < 2 || !f[1].equals(path)) continue;
+                String dev = f[0];
+                boolean network = dev.startsWith("//")
+                        || (dev.contains(":") && !dev.startsWith("/"));
+                if (!network) return "";
+                String name = dev.substring(Math.max(dev.lastIndexOf('/'), dev.lastIndexOf(':')) + 1);
+                return name;
+            }
+        } catch (Throwable ignored) {
+            // 非 Linux / 无 /proc：退回目录名
+        }
+        return "";
     }
 
     private static boolean canBrowse(String path) {

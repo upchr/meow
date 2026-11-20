@@ -271,3 +271,33 @@ $ meowd 进程 env: TRIM_DATA_SHARE_PATHS=/vol1/@appshare/meow/library
 2. **远程挂载（FUSE/网盘）可能极慢**：3 秒超时会回"目录读取超时"，但超时后后台线程可能仍在跑
    （`cancel(true)` 对阻塞的 `listFiles()` 无效）——守护线程池保证它最多占一个线程，不会堆积。
 3. **SMB/WebDAV 的目录浏览未做**（§7 第二阶段）：它们的弹窗仍是手填 base + 「测试连接」。
+
+### 10.1 两个只有真机才暴露的坑（2026-11-20）
+
+1. **中文目录点不进去 → `Malformed input or input contains unmappable characters`**
+   - `java.nio.file.Paths.get("电影")` 用的是 **`sun.jnu.encoding`**，而 fnOS 的 `cmd/main` 不设
+     locale（`LANG` 未定义 → POSIX/C），JVM 退到 `ANSI_X3.4-1968`，中文文件名无法映射。
+   - 修法：`supervisor.rs` 起 Java 时同时给 `-Dsun.jnu.encoding=UTF-8` **和**
+     `LANG/LC_ALL=C.UTF-8`（实测 Java 21 两者都要，只给 `-D` 不够）。
+   - Docker 侧早就设了这一个（compose 的 `JAVA_OPTS`），fpk 漏了 —— 这也是为什么
+     同一个后端在 Docker 里中文正常、在 fpk 上崩。
+
+2. **左栏显示内部卷名（`1000-0-a4d36b4c`）而不是「视频」**
+   - fnOS 的「远程挂载」在 `TRIM_DATA_ACCESSIBLE_PATHS` 里给的是**挂载点路径**，
+     不是用户看到的共享名；`/proc/mounts` 里才有真名：`//192.168.1.19/视频 → /vol02/1000-0-a4d36b4c`。
+   - 修法：`LibraryRoots.labelOf()` 先查 `mountLabel()`（只对 cifs 的 `//host/share`
+     与 nfs 的 `host:/export` 取末段，本地块设备不取，否则整卷显示成 `sda1`），查不到再退回目录名。
+
+**改造后的真机验收**（`.34` 与 `.20` 两台都过）：
+
+```text
+roots → share:0(library) + authorized:0(label=视频, path=/vol02/1000-0-a4d36b4c)
+ls authorized:0                → 18NO / 其他 / 动漫 / 电影 / 电视剧
+ls authorized:0 path=电影       → 教父 / 色戒
+ls authorized:0 path=电影/教父&includeFiles=1 → 第1部.1972...mp4 (9.3GB) / 第2部.1974...mp4
+POST /api/library 建 local 库   → ok:true
+GET  /api/library              → tops 列出 教父 / 色戒
+```
+
+★ 注意 `.20`（OECT，aarch64）上的 `TRIM_DATA_ACCESSIBLE_PATHS` 与 `.34` 是**同一台**
+SMB 共享（`//192.168.1.19/视频`），两台机器的授权各自独立——授权要按机器分别做。
