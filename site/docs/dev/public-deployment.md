@@ -201,9 +201,23 @@ TLS 可以放在：
 - 所有比较用常量时间；
 - 配置导出/WebDAV 同步必须排除 `auth`、`deviceTokens`、`configKeyHash`。
 
-## 九、TLS 与 HTTP 两种模式
+## 九、网络形态与密码可用范围（三档）
 
-### 9.1 TLS 模式（推荐）
+判据只有一个函数：`Auth.passwordAllowed()`。它不看"是不是 TLS"，看**这一跳网络的信任范围**：
+
+| 访问方式 | 密码登录 | 依据 |
+|---|---|---|
+| HTTPS（TLS 终结在 nginx / meowd，或反代声明 `X-Forwarded-Proto: https`） | ✅ | `isSecure()` |
+| 本机回环（`127.0.0.1` / `::1`） | ✅ | 运维调试，不经网络 |
+| 局域网（`10/8`、`172.16/12`、`192.168/16`、CGNAT `100.64/10`、IPv6 ULA / 链路本地） | ✅ | 同网段本来就是可信域 |
+| 公网地址 + HTTP | ❌ | 密码明文过公网 = 公开；改用 TLS 或设备令牌 |
+| `MEOW_ALLOW_INSECURE_PASSWORD=1` | ✅ | 逃生口，仅测试 |
+
+> **2026-11-20 调整**：之前只放行"回环"，于是家里 NAS / Docker 用局域网 IP 打开时
+> **根本没有密码框** —— 用户以为这个产品没有密码体系。真正的边界是公网，不是"非回环"。
+> 局域网内明文密码的风险边界就是同一个网段（可被嗅探）；要更强保证就上 TLS 或用令牌。
+
+### 9.1 TLS 模式（推荐，公网唯一选项）
 
 - Docker：`web` 容器 nginx 增加 `listen 443 ssl` + 证书挂载；HTTP 301 到 HTTPS；
 - fnOS：meowd 增加 `--tls-cert/--tls-key`（rustls）；或同机一个反向代理容器；
@@ -211,16 +225,21 @@ TLS 可以放在：
 - nginx 必须设 `X-Forwarded-Proto $scheme`；应用只在 `MEOW_TRUST_PROXY` 指定的回环地址上采信它；
 - 证书续期不在范围内：Docker 用 certbot `--deploy-hook` reload nginx；fnOS 自签/域名证书需手工续，文档写明。
 
-### 9.2 纯 HTTP 模式（受限）
+### 9.2 局域网 HTTP（家用默认形态）
 
-- **禁止密码登录**（避免密码明文）：只保留设备令牌；密码由本机 CLI 设置，不开放网页 setup；
-- **浏览器也走设备令牌模式**：首次打开输入令牌，存 `localStorage`，不启用会话 Cookie（HTTP 下 Cookie 同样会被嗅探）；
-- 媒体票 TTL 压到 30 分钟，并默认绑 IP；
-- 建议叠加 `MEOW_ALLOW_CIDR`（来源白名单）；**回环地址永远放行**（否则 fnOS 网关/本机反代会被自己挡掉）；
-- 文档明确：HTTP 模式只防误闯/扫描，不防链路攻击；公网使用风险自担。
+- 密码可用（判据见上表）；Cookie 不带 `Secure`，媒体票 TTL 压到 30 分钟并绑 IP；
+- 浏览器走会话 Cookie（同源），TV / PC 仍走设备令牌或配对码；
+- 建议叠加 `MEOW_ALLOW_CIDR`（来源白名单）；**回环永远放行**（否则 fnOS 网关 / 本机反代会被自己挡掉）；
+- 风险说清：同网段可嗅探。它防的是访客 / 室友 / 误闯扫描，不防链路级攻击。
 
-> 如果只想"HTTP 直连 + 不折腾证书"，最省事仍是 VPN（Tailscale/WireGuard）：
-> 隧道内继续用 HTTP，密码登录也安全。
+### 9.3 公网 HTTP（不推荐）
+
+- 密码登录**自动关闭**，登录页直接写清三条出路（配 HTTPS / 填设备令牌 / 回局域网访问）；
+- 只剩设备令牌，而令牌在链路上同样是明文 —— 只能防误闯 / 扫描，防不了中间人；
+- 真要公网 HTTP，唯一正确做法是 VPN（Tailscale / WireGuard），隧道内当局域网用。
+
+> 分体部署（web 在前、后端在内网）属于 9.2 或 9.1：后端看到的是反代地址，
+> 必须设 `MEOW_TRUST_PROXY=1` 并让前置注入 `X-Forwarded-For`，否则会被当成回环。
 
 ## 十、部署形态
 
@@ -743,3 +762,84 @@ auth.json 回到关闭态。Windows 权限位异常已有兜底（save 里 try/c
 1. **撤销设备后，已签发的媒体票在有效期内（≤30 分钟）仍可播**。票是 HMAC 自证、服务端不存表，撤设备只能让"取新票"失败，收不回已发出的票。要彻底即时生效只能把票做成有状态（每张票落盘/查表），代价是每个分片请求多一次存储访问 —— 当前不做。
 2. 安全事件是**内存**的，后端重启清零；需要长期审计要落到文件/外部日志（HSM 场景才值得）。
 3. `lastIp` 是"最近一次成功请求的 IP"，按 1 小时节流，可能滞后；反向代理后取的是 `X-Forwarded-For` 首段，代理没配好会全是内网地址。
+
+## 十九、fnOS / 飞牛套件运维（2026-11-20 补）
+
+### 19.1 目录与端口
+
+| 路径 | 是什么 |
+|---|---|
+| `/vol1/@appcenter/meow/` | 程序目录：`bin/meowd`、`web/`（静态站）、`seed/apiserver/apiserver.jar`、`plugins/`、`ui/` |
+| `/vol1/@appdata/meow/data/` | **数据目录**：`auth.json`、`policy.json`、片库/缓存/日志 |
+| `/var/apps/meow/etc/meow.conf` | 启动环境变量（被 `cmd/main` source 进来） |
+| `/var/apps/meow/cmd/main` | 启动脚本（`start` / `stop` / `status`） |
+| `/vol1/@appcenter/meow/meow.sock` | fnOS 网关（5666）用的 unix socket |
+
+端口：**30010 = meowd（web + 反代）**，**30011 = apiserver（只听 `127.0.0.1`）**。
+浏览器一律访问 30010；直连 30011 只在 NAS 本机排查时用。
+
+### 19.2 开鉴权
+
+`/var/apps/meow/etc/meow.conf`：
+
+```bash
+export MEOW_AUTH_MODE=on
+# 可选：固定 setup 令牌（不设则随机生成并打印到日志）
+export MEOW_SETUP_TOKEN=换成一个你自己的随机串
+```
+
+> ★ 设置页保存会走 `cmd/config_init`。**1.2.19 及更早它整体覆盖这个文件**，
+> 于是 `export MEOW_AUTH_MODE=on` 被抹掉、鉴权静默关闭（实测踩过）。
+> 现在 `config_init` 只替换端口两行、其余原样保留。
+
+### 19.3 拿 setup 令牌
+
+```bash
+# 自己设过 MEOW_SETUP_TOKEN 就用它；否则看启动日志
+grep -i -A3 "setup" /vol1/@appdata/meow/logs/meowd.log | tail -8
+```
+
+### 19.4 重置密码 / 关闭鉴权
+
+```bash
+# 重置（改完立即退出，不启动服务；密码 ≥10 位）
+su meow -s /bin/sh -c 'java -jar /vol1/@appcenter/meow/seed/apiserver/apiserver.jar \
+  --auth-reset-password=新密码 --data-dir=/vol1/@appdata/meow/data'
+
+# 彻底关掉（清空密码 / 设备令牌 / configKey）
+su meow -s /bin/sh -c 'java -jar /vol1/@appcenter/meow/seed/apiserver/apiserver.jar \
+  --auth-off --data-dir=/vol1/@appdata/meow/data'
+```
+
+★ 必须用 `meow` 用户跑：`auth.json` 是 0600 且属主为 meow（uid **993**，不是 1000）。
+★ 先 `appcenter-cli stop meow` 再改，否则跑着的实例会用旧内存值覆盖回去。
+
+### 19.5 重启应用（改 conf / 换 jar 之后）
+
+```bash
+appcenter-cli stop meow && sleep 2 && appcenter-cli start meow
+```
+
+不要手工 `nohup ./cmd/main start`：`TRIM_PKGVAR` 等变量只在 appcenter-cli 的环境里存在，
+手工跑会报 `TRIM_PKGVAR: unbound variable`。
+
+### 19.6 来源 IP：两个入口，能力不同
+
+| 入口 | 后端看到的来源 IP | 后果 |
+|---|---|---|
+| 直连 `http://<NAS>:30010/` | **真实 IP** —— meowd 用 socket 对端**覆盖**注入 `X-Forwarded-For`（`meowd/src/http.rs` 的 `set_peer_addr`，2026-11-20 起） | 限流、设备 `lastIp`/`bindIp`、媒体票 IP 绑定、局域网/公网密码判定全部正常 |
+| 走 fnOS 网关（`https://<NAS>:5666` → unix socket） | **恒为 `127.0.0.1`** | 上述四项全部退化；`passwordAllowed` 只能靠"像本机"放行 |
+
+真因：fnOS 的 micro_app 网关不转发 `X-Forwarded-For`（实测：连客户端自带的伪造值都会被
+清洗掉），meowd 只能看到 unix socket 的对端。**这层 meowd 修不了**。
+
+由此三条红线：
+
+1. 要安全 → 用 **30010 直连 + 自己的 TLS 反代**（能拿真实 IP，公网密码会被正确拒绝）；
+2. 只用 5666 网关 → **别把 5666 直接映射到公网**（链路是否加密由网关决定，应用侧判断不了）；
+3. 需要"公网 + 密码" → 走 VPN（Tailscale / WireGuard），隧道内按局域网处理。
+
+### 19.7 升级时必须一起换的两样
+
+`meowd` 二进制与 `apiserver.jar` **要同批替换**：新 jar 依赖 meowd 注入的可信 XFF，
+旧 meowd 不注入 → 开了 `MEOW_TRUST_PROXY` 之后来源 IP 仍是 127.0.0.1（不会更糟，但也修不好）。

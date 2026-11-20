@@ -9,6 +9,7 @@ mod supervisor;
 mod upgrade;
 mod version;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,10 +101,16 @@ async fn run(cfg: config::Config) -> Result<()> {
         match bind_gateway_socket(&cfg.gateway_socket)? {
             Some(socket) => {
                 let tcp = async move {
-                    axum::serve(listener, app)
-                        .with_graceful_shutdown(wait_shutdown(rx1))
-                        .await
-                        .context("http server")
+                    // ★ 带连接信息起服务：http::set_peer_addr 靠它把 socket 对端 IP
+                    //   注入 X-Forwarded-For。少了这一句，直连 30010 的部署在后端看来
+                    //   全是 127.0.0.1（鉴权限流、设备 bindIp、媒体票 IP 绑定全部失效）。
+                    axum::serve(
+                        listener,
+                        app.into_make_service_with_connect_info::<SocketAddr>(),
+                    )
+                    .with_graceful_shutdown(wait_shutdown(rx1))
+                    .await
+                    .context("http server")
                 };
                 let gw = serve_gateway(socket, gateway_app, rx2);
                 let (tcp_res, ()) = tokio::join!(tcp, gw);
@@ -111,19 +118,25 @@ async fn run(cfg: config::Config) -> Result<()> {
             }
             None => {
                 // socket 建不起来不该拖垮整个应用：TCP 30010 仍可直连，网关入口返回 502
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(wait_shutdown(rx.clone()))
-                    .await
-                    .context("http server")?;
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(wait_shutdown(rx.clone()))
+                .await
+                .context("http server")?;
             }
         }
     }
     #[cfg(not(unix))]
     {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(wait_shutdown(rx))
-            .await
-            .context("http server")?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(wait_shutdown(rx))
+        .await
+        .context("http server")?;
     }
 
     // 等守护任务把插件、后端进程组依次收干净（插件 10s + Java 10s，留余量）

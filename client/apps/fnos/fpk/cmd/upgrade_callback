@@ -9,5 +9,14 @@ mkdir -p "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/plugins" "$TRIM_PKGVAR/logs" "$TRIM_P
 "$(dirname "$0")/icon_setup" >/dev/null 2>&1
 # 分享目录权限同理：升级/重装后重新保证一次（root 才有权限）
 "$(dirname "$0")/log_share_setup" >/dev/null 2>&1
+
+# 老用户的 meow.conf 里没有 MEOW_TRUST_PROXY（1.2.19 及更早）：补上。
+# 缺它时后端把所有人都当成 127.0.0.1 —— 限流、设备 lastIp/bindIp、媒体票
+# IP 绑定全部失效，也判不出"局域网 vs 公网"的密码可用范围。
+CONF="$TRIM_PKGETC/meow.conf"
+if [ -f "$CONF" ] && ! grep -q 'MEOW_TRUST_PROXY' "$CONF" 2>/dev/null; then
+    printf '\n# 由 meowd 按 socket 对端覆盖注入 X-Forwarded-For，可信\nexport MEOW_TRUST_PROXY=1\n' >> "$CONF" 2>/dev/null
+fi
+
 "$(dirname "$0")/main" start >/dev/null 2>&1
 exit 0

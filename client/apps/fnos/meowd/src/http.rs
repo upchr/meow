@@ -1,7 +1,9 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{header, HeaderName, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -31,8 +33,10 @@ pub struct AppState {
 /// <p>所以 TCP 上同时提供带前缀的入口：根路径 307 到 `/app/meow/`，
 /// 前缀路由剥掉后再交给同一套应用路由（assets 正常命中）；裸路径照旧
 /// （`/api`、`/assets` 直连仍可用，不破坏已有脚本与探针）。
+/// 直连入口（TCP 30010）：把 socket 对端 IP 写成可信的 `X-Forwarded-For`
+/// （见 `set_peer_addr`），后端才分得清"谁在访问"。
 pub fn build_router(state: AppState) -> Router {
-    let inner = app_routes(state);
+    let inner = app_routes(state).layer(middleware::from_fn(set_peer_addr));
     let nested = format!("{GATEWAY_PREFIX}/");
     Router::new()
         .route("/", get(app_root_redirect))
@@ -179,6 +183,32 @@ async fn set_forwarded_prefix(mut req: Request<Body>, next: Next) -> Response {
         req.headers_mut().insert(
             HeaderName::from_static("x-forwarded-prefix"),
             HeaderValue::from_static(GATEWAY_PREFIX),
+        );
+    }
+    next.run(req).await
+}
+
+/// 直连入口（TCP 30010）：用 socket 对端覆盖 `X-Forwarded-For` / `X-Forwarded-Proto`。
+///
+/// <p>★ 必须覆盖而不是透传：客户端能自带 `X-Forwarded-For: 127.0.0.1`，而后端
+/// `clientIp()` 取 XFF 最后一段 —— 开了 `MEOW_TRUST_PROXY` 后，伪造值就会被当成
+/// 真实来源，登录限流、设备 `bindIp`、媒体票 IP 绑定、`passwordAllowed` 的回环
+/// 判断全部可绕过。用对端地址覆盖后，客户端自带的那个一定被丢掉。
+///
+/// <p>unix socket（fnOS 网关）那条**不挂**这层：唯一对端是本机网关，真实客户端
+/// IP 只能指望网关照实转发；实测 fnOS micro_app 网关连客户端自带的 XFF 都会
+/// 清洗掉，所以网关形态下后端只能看到 127.0.0.1（文档已列为此形态的已知限制）。
+async fn set_peer_addr(mut req: Request<Body>, next: Next) -> Response {
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0);
+    if let Some(addr) = peer {
+        if let Ok(value) = HeaderValue::from_str(&addr.ip().to_string()) {
+            req.headers_mut()
+                .insert(HeaderName::from_static("x-forwarded-for"), value);
+        }
+        // meowd 自己是明文 HTTP；TLS 终结在网关/反代那一侧，不在这里
+        req.headers_mut().insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("http"),
         );
     }
     next.run(req).await

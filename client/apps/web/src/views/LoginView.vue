@@ -317,15 +317,18 @@ async function submit(): Promise<void> {
           {{ reasonText }}
         </p>
         <!--
-          纯 HTTP 部署关掉了密码登录（密码会明文过网）。不说清的话用户只看到
-          "为什么没有密码框"，还会以为自己的账号坏了。
+          公网 HTTP 关掉了密码登录（密码会明文过网）。不说清的话用户只看到
+          "为什么没有密码框"，还会以为自己的账号坏了。局域网 HTTP 是允许的
+          （见 Auth.passwordAllowed），所以这里只可能是公网地址走到这一步。
         -->
         <p
           v-if="mode === 'token' && !passwordAllowed && authMode === 'password'"
           class="rounded-md border border-line bg-base px-3 py-2 text-[11px] leading-relaxed text-ink-3"
         >
-          当前是纯 HTTP 访问，密码登录已关闭（密码会明文过网）。要用账号密码登录请先配 HTTPS
-          （反向代理或 docker-compose.tls.yml），或在这里用设备令牌 / 配对码。
+          你用公网地址 + HTTP 访问，密码登录已关闭（密码会明文过网）。三条出路：
+          ① 配 HTTPS（反向代理或 <code>docker-compose.tls.yml</code>）后用账号密码；
+          ② 在这里填设备令牌（网页设置里生成）；
+          ③ 局域网内直接访问 NAS/服务器地址，密码框会出现。
         </p>
         <input
           v-if="mode === 'setup'"
@@ -411,11 +414,24 @@ async function submit(): Promise<void> {
         -->
         <details v-if="mode === 'login'" class="text-[11px] leading-relaxed text-ink-3">
           <summary class="cursor-pointer select-none">忘了密码？</summary>
+          <p class="mt-1">在跑后端的机器上执行，改完立即退出、不会启动服务：</p>
+          <ul class="mt-1 space-y-1.5">
+            <li>
+              <span class="text-ink-3">Docker</span><br />
+              <code class="break-all rounded bg-base px-1">docker exec -it meow-apiserver java -cp "/app/classes:/app/libs/*" ApiServer --auth-reset-password=新密码 --data-dir=/data</code>
+            </li>
+            <li>
+              <span class="text-ink-3">飞牛 / fnOS 套件</span><br />
+              <code class="break-all rounded bg-base px-1">su meow -s /bin/sh -c 'java -jar /vol1/@appcenter/meow/seed/apiserver/apiserver.jar --auth-reset-password=新密码 --data-dir=/vol1/@appdata/meow/data'</code>
+            </li>
+            <li>
+              <span class="text-ink-3">直接跑 jar</span><br />
+              <code class="break-all rounded bg-base px-1">java -jar apiserver.jar --auth-reset-password=新密码 --data-dir=数据目录</code>
+            </li>
+          </ul>
           <p class="mt-1">
-            在服务器上执行（改完立即退出，不会启动服务）：<br />
-            <code class="rounded bg-base px-1">java -cp "classes;libs/*" ApiServer --auth-reset-password=新密码 --data-dir=数据目录</code><br />
-            Docker：<code class="rounded bg-base px-1">docker exec -it meow-apiserver java -cp "/app/classes:/app/libs/*" ApiServer --auth-reset-password=新密码 --data-dir=/data</code><br />
-            改完所有浏览器要重新登录，设备令牌不受影响。
+            密码至少 10 位。改完所有浏览器要重新登录，设备令牌与 TV 配对不受影响；
+            彻底关掉鉴权用 <code class="rounded bg-base px-1">--auth-off</code>（同一位置换参数）。
           </p>
         </details>
 

@@ -348,17 +348,52 @@ public final class Auth {
     /**
      * 密码登录/setup 是否允许。
      *
-     * <p>默认只在 TLS 或本机回环允许；本机回环是为了无证书的本地调试。
-     * 局域网/公网纯 HTTP 必须显式设 {@code MEOW_ALLOW_INSECURE_PASSWORD=1}
-     * （测试用，生产不推荐）。
+     * <p>判据是"这一跳网络的信任范围"，不是"TLS 与否"：
+     * <ul>
+     *   <li>TLS（或反代声明了 https）→ 允许；</li>
+     *   <li>显式开了 {@code MEOW_ALLOW_INSECURE_PASSWORD=1} → 允许（测试用）；</li>
+     *   <li>本机回环、局域网（RFC1918 / CGNAT / ULA / 链路本地）→ 允许；</li>
+     *   <li>公网地址 + 明文 → 禁止（密码过公网等于公开，只能上 TLS 或用设备令牌）。</li>
+     * </ul>
+     *
+     * <p>★ 早先只放行"回环"，于是局域网 HTTP 部署（家里 NAS / Docker）在浏览器里
+     * 根本没有密码框 —— 用户以为这个产品没有密码体系。真正的边界是公网，
+     * 不是"非回环"。
+     *
+     * <p>★ 判断依赖 {@link #clientIp}，它只在 {@code MEOW_TRUST_PROXY} 打开时才读
+     * {@code X-Forwarded-For}。反代/网关形态必须开那个开关（meowd 与 nginx 都会
+     * 注入可信 XFF），否则所有请求都被当成 127.0.0.1 而落进"本机放行"。
      */
     public static boolean passwordAllowed(HttpExchange ex) {
         if (isSecure(ex)) return true;
         String env = System.getenv("MEOW_ALLOW_INSECURE_PASSWORD");
         if (env != null && "1".equals(env.trim())) return true;
         String ip = clientIp(ex);
-        return "127.0.0.1".equals(ip) || "::1".equals(ip)
-                || "0:0:0:0:0:0:0:1".equals(ip);
+        return isLoopback(ip) || isPrivateAddress(ip);
+    }
+
+    /**
+     * 明文密码可接受的地址范围：RFC1918 / CGNAT / ULA / 链路本地。
+     *
+     * <p>刻意**不含** 169.254.0.0/16（IPv4 链路本地）：云环境的元数据服务就在那一段，
+     * 把它当可信等于给 SSRF 开后门。
+     */
+    private static boolean isPrivateAddress(String ip) {
+        if (ip == null || ip.isEmpty()) return false;
+        for (String cidr : new String[]{
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16",
+                "100.64.0.0/10",   // CGNAT；Tailscale/WireGuard 组网常落在这里
+                "fc00::/7",
+                "fe80::/10"}) {
+            try {
+                if (cidrContains(ip, cidr)) return true;
+            } catch (Throwable ignored) {
+                // 单条写错不该改变整体判定
+            }
+        }
+        return false;
     }
 
     private static boolean trustProxy() {

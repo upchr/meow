@@ -249,3 +249,36 @@ describe('设置页登录守卫', () => {
     }
   })
 })
+
+describe('来源 IP、密码可用范围与 fpk 配置（2026-11-20）', () => {
+  it('passwordAllowed 放行局域网，只拦公网明文', () => {
+    const auth = repo('server/host/src/shared/core/Auth.java')
+    expect(auth).toContain('isPrivateAddress')
+    expect(auth).toContain('192.168.0.0/16')
+    expect(auth).toContain('172.16.0.0/12')
+    // CGNAT 段：Tailscale/WireGuard 组网常落在这里，必须算可信
+    expect(auth).toContain('100.64.0.0/10')
+    // 169.254 是云元数据（SSRF）段，绝不能进"可信"名单
+    const fn = auth.slice(auth.indexOf('private static boolean isPrivateAddress'))
+    expect(fn.slice(0, fn.indexOf('return false'))).not.toContain('169.254')
+  })
+
+  it('meowd 直连入口用 socket 对端覆盖 XFF，且服务真的带上了连接信息', () => {
+    const http = repo('client/apps/fnos/meowd/src/http.rs')
+    expect(http).toContain('fn set_peer_addr')
+    expect(http).toContain('x-forwarded-for')
+    // 没有 into_make_service_with_connect_info 就拿不到对端，注入的会是空
+    const main = repo('client/apps/fnos/meowd/src/main.rs')
+    expect(main).toContain('into_make_service_with_connect_info::<SocketAddr>()')
+  })
+
+  it('fpk 的 meow.conf 不能被设置页整文件覆盖，且默认打开 trust proxy', () => {
+    const init = repo('client/apps/fnos/fpk/cmd/config_init')
+    // 整体重写会把 MEOW_AUTH_MODE / MEOW_SETUP_TOKEN 一起抹掉（实测踩过）
+    expect(init).toContain('grep -v')
+    expect(init).toContain('chmod 600')
+    expect(repo('client/apps/fnos/fpk/cmd/install_init')).toContain('MEOW_TRUST_PROXY=1')
+    // 老用户升级时要补上
+    expect(repo('client/apps/fnos/fpk/cmd/upgrade_callback')).toContain('MEOW_TRUST_PROXY')
+  })
+})

@@ -1,9 +1,28 @@
 #!/bin/bash
 # 配置变更前：把向导值落到 etc/meow.conf（向导环境变量只在本次流程存在）。
+#
+# ★ 不能整体覆盖：用户/运维往这里加的 export（MEOW_AUTH_MODE、MEOW_SETUP_TOKEN、
+#   MEOW_TRUST_PROXY…）会被一起抹掉 —— 实测「应用设置页一保存，鉴权就关了」，
+#   而且当时没有任何提示。只替换端口那两行，其余原样保留。
 set -u
 mkdir -p "$TRIM_PKGETC" 2>/dev/null
+CONF="$TRIM_PKGETC/meow.conf"
+TMP="$CONF.tmp.$$"
+
 {
     echo "MEOW_SHELL_PORT=${wizard_port:-30010}"
     echo "MEOW_API_PORT=${wizard_api_port:-30011}"
-} > "$TRIM_PKGETC/meow.conf" 2>/dev/null
+    if [ -f "$CONF" ]; then
+        # 去掉旧的端口两行与空行，其余（含 export 的鉴权/代理开关）保留
+        grep -v -E '^[[:space:]]*(export[[:space:]]+)?MEOW_(SHELL|API)_PORT=' "$CONF" 2>/dev/null \
+            | grep -v -E '^[[:space:]]*$'
+    fi
+} > "$TMP" 2>/dev/null
+
+# 原文件是 0600（里面可能有 MEOW_SETUP_TOKEN），改写后必须保持
+if [ -s "$TMP" ]; then
+    chmod 600 "$TMP" 2>/dev/null
+    mv -f "$TMP" "$CONF" 2>/dev/null
+fi
+rm -f "$TMP" 2>/dev/null
 exit 0

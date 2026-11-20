@@ -13,7 +13,13 @@ if [ ! -f "$TRIM_PKGETC/meow.conf" ]; then
     cat > "$TRIM_PKGETC/meow.conf" <<'EOF'
 MEOW_SHELL_PORT=30010
 MEOW_API_PORT=30011
+# meowd 在本机反代，X-Forwarded-For 由它按 socket 对端**覆盖注入**（见
+# meowd/src/http.rs 的 set_peer_addr），所以这个头可信。
+# 不开的话后端把所有访问都当成 127.0.0.1：登录限流、设备 lastIp/bindIp、
+# 媒体票 IP 绑定全部失效，也判不出"局域网 vs 公网"的密码可用范围。
+export MEOW_TRUST_PROXY=1
 EOF
+    chmod 600 "$TRIM_PKGETC/meow.conf" 2>/dev/null
 fi
 
 # 依赖与应用同卷：dirname(TRIM_APPDEST) = @appcenter 所在目录，不硬编码 /vol1
