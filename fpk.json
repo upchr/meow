@@ -1,0 +1,319 @@
+{
+  "schema_version": "2",
+  "source_info": {
+    "name": "Meow main mirror",
+    "url": "https://github.com/upchr/meow"
+  },
+  "apps": {
+    "meow": {
+      "releases": {
+        "1.2.4": {
+          "changelog": "1. 应用更新按钮改名「更新」：点一下下载完直接调起安装器\n2. 修复电视上「更新源」输入框点不进去、填了也存不上的问题",
+          "updated_at": "2026-11-13T04:36:19Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/fpk-v1.2.4/meow_1.2.4_x86.fpk",
+              "sha256": "65831e0831e95aa504fbbd6fb7977a230a67d652f89b6ca4bf2fc57884c10973",
+              "size": 39555443
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/fpk-v1.2.4/meow_1.2.4_arm.fpk",
+              "sha256": "b4cc277814b8b2c18276087c60e1ce4a263e2ff818c9633084dccaaf1fc3510b",
+              "size": 39514086
+            }
+          }
+        },
+        "1.2.5": {
+          "changelog": "1. 电视上「更新源」改成和搜索框一样直接输入，不再弹对话框",
+          "updated_at": "2026-11-13T06:41:24Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.5/meow_1.2.5_x86.fpk",
+              "sha256": "2fa7b113f2eb2b8ec041119824b396f12fb8cdafea588eae198560ad0f1ab02a",
+              "size": 39547220
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.5/meow_1.2.5_arm.fpk",
+              "sha256": "ad3f26016dc827f116c13a27a8c4bf2739e756316f03d7f23b41fdf4010c136d",
+              "size": 39514553
+            }
+          }
+        },
+        "1.2.6": {
+          "changelog": "1. 修复电视上「运行时模块」点检查更新必定下载失败的问题\n2. 电视模块与弹幕组件已是最新时，不再重复下载安装包\n3. 电视拉模块清单优先走可用的加速线路，弱网也能检查成功\n4. 内置更新源改为主仓正式发布地址，弱网环境更稳定",
+          "updated_at": "2026-11-13T11:36:55Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.6/meow_1.2.6_x86.fpk",
+              "sha256": "d867b7506f3a58f3f0c3bff908f88a04cca45a84acfe4c9b49aff2d92eea9478",
+              "size": 39552382
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.6/meow_1.2.6_arm.fpk",
+              "sha256": "ba40dbf325d41855d89f543391f3659aac900b39b2fc735bad6e19be63e6b301",
+              "size": 39514930
+            }
+          }
+        },
+        "1.2.7": {
+          "changelog": "1. 修复网络差时「检查更新」一直转圈、加速线路被跳过的问题\n2. 电视上模块与弹幕检查不再卡住页面，最多等 25 秒给结论\n3. 更新检查不再重复下载已是最新的模块与弹幕组件",
+          "updated_at": "2026-11-13T14:08:19Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/meow_1.2.7_x86.fpk",
+              "sha256": "37d1ec08984211c7a9cde93b8b98136b793f25a96d725c3c348ccfecd860057a",
+              "size": 39557939
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.7/meow_1.2.7_arm.fpk",
+              "sha256": "8904a1bb75938739b53ef0ecb425f6316a40b24157dbf449aad8cf3fea6da458",
+              "size": 39517185
+            }
+          }
+        },
+        "1.2.9": {
+          "changelog": "1. 播放页左右滑动即可调节进度，松手生效，触屏和鼠标拖动都支持\n2. 从原生播放器返回播放页可直接继续播放，不再需要退出重进\n3. 已缓冲的播放不再被迟到的线路超时提示打断\n4. 手选弹幕按所选源加载，不再出现其他剧的缓存弹幕\n5. 详情页新增「去搜索」，一键搜索该剧的其他源\n6. fnOS：浏览器直连 30010 不再黑屏",
+          "updated_at": "2026-11-16T04:00:09Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.9/meow_1.2.9_x86.fpk",
+              "sha256": "b5a164266a5fa29e7033429d094e91493627c26047b1c38534e1aeb045a0e585",
+              "size": 39562390
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.9/meow_1.2.9_arm.fpk",
+              "sha256": "dae78b43f1cbca27cff31c8a338f3e4374729365f341e5cdfe7c082d3e379fdf",
+              "size": 39524579
+            }
+          }
+        },
+        "1.2.10": {
+          "changelog": "1. fnOS 安装包体积减半（38MB → 19MB），下载与升级更快\n2. fnOS 安装包里不再附带用不到的转换工具，安装占用更小",
+          "updated_at": "2026-11-16T04:11:09Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/fpk-v1.2.10/meow_1.2.10_x86.fpk",
+              "sha256": "c7ca35a559a1613a8707d9a6861ce92003ce96290b449ab0f0f88e28fd6af978",
+              "size": 21934525
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/fpk-v1.2.10/meow_1.2.10_arm.fpk",
+              "sha256": "e22b13f45f0db6f7c5627745e9613ad4c188463133e054e59b0295a9d8cbdd53",
+              "size": 21898727
+            }
+          }
+        },
+        "1.2.11": {
+          "changelog": "1. 换源后自动带上次的集数与进度，不用重新找\n2. 播放页点一下不再闪一下就消失，鼠标与遥控器都正常\n3. 弹幕更快出齐：播放 8 秒起自动补齐到完整列表\n4. 设置页切换后端后整页刷新，改的设置不会再落到旧后端\n5. fnOS：修复弹幕插件配置写错目录，聚合弹幕恢复可用\n6. 电视：导入到本机时补齐解析器与广告过滤等配置",
+          "updated_at": "2026-11-16T06:12:39Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.11/meow_1.2.11_x86.fpk",
+              "sha256": "dd9a6f52e6e1a94d0e81fcbba2b20d372bb01ea04921a824ce7cb7e431d999d9",
+              "size": 21937481
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.11/meow_1.2.11_arm.fpk",
+              "sha256": "e36baabd0b4ecca42635ed5335e56b9f31ddd9e8c15e974b35bff7e9a8fc50cf",
+              "size": 21897050
+            }
+          }
+        },
+        "1.2.8": {
+          "changelog": "1. 修复按返回键或点空白关闭更新弹框后，这个版本再也不提示的问题\n2. 被「稍后」的版本在更新中心如实显示「已跳过」，不再冒充已是最新\n3. 更新检查会记录每条加速线路的成败与耗时，出问题好排查",
+          "updated_at": "2026-11-16T06:20:04Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.8/meow_1.2.8_x86.fpk",
+              "sha256": "43a31a9fe4aa5a4e9240aa4b348cce4d01aafc1cef1dcff023271886a29b5409",
+              "size": 39552566
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.8/meow_1.2.8_arm.fpk",
+              "sha256": "61b504d1563eb08b28b481296de4ef738f19120cf7984254799bf05353aa144f",
+              "size": 39518074
+            }
+          }
+        },
+        "1.2.12": {
+          "changelog": "1. 投屏：手机 / PC 可把正在看的片投给电视或投影，进度可回传\n2. fnOS 应用启动后不再闪退或被旧进程占住端口\n3. fnOS 应用也会弹更新提示，可点「稍后」跳过这个版本\n4. 更新中心两处版本号一致，直连 30010 不再显示无效更新行\n5. TV / PC 连 NAS 后端时会提示「后端可升级」\n6. 首屏网络抖动自动重试两次；新增 MCP 操作指南与 skill",
+          "updated_at": "2026-11-16T10:42:03Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.12/meow_1.2.12_x86.fpk",
+              "sha256": "6a2dbf4a5f2dd77820729c08bfd305f9f6ad53a77f360e1307a50a2c57df0494",
+              "size": 21973591
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.12/meow_1.2.12_arm.fpk",
+              "sha256": "944ce227c825223023830418f9cc645bafcbd82ae54381acdfe4c1a9ae1e1083",
+              "size": 21938859
+            }
+          }
+        },
+        "1.2.13": {
+          "changelog": "1. 手动搜索弹幕选中后立即生效，不再「点了没反应」\n2. 首屏没抓到弹幕时，后台补齐后会自动补上\n3. 暂停时自动换上更全的弹幕，不用再拖一下进度\n4. 聚合弹幕不会再被单源覆盖，同一集每次进来更稳定\n5. 手选源取不到弹幕时会提示，不再静默失败",
+          "updated_at": "2026-11-16T13:36:19Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.13/meow_1.2.13_x86.fpk",
+              "sha256": "35eb16dd305a8cf62a8439bc935e62c4a7bc60455a3c0a6ecb118d4a19660d24",
+              "size": 21972113
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.13/meow_1.2.13_arm.fpk",
+              "sha256": "ec80fa69177ee5b25a1fdd5c1f37c1145f8fd3e59da0b7f0bf450cb6831748d8",
+              "size": 21939922
+            }
+          }
+        },
+        "1.2.14": {
+          "changelog": "1. 片库里的 4K/MKV 影片起播从一两分钟缩短到十几秒，并且能连续播放不卡\n2. 播放进度条显示影片真实总时长，不再随着转码进度自己变长\n3. 转码中断或失败会明确提示，不会再出现播几秒就卡住且无法恢复\n4. 手机横屏控制栏空间不足时，重播和刷新会收进「更多」，全屏按钮紧挨「更多」\n5. 亮度、音量手势从上次数值继续调整，不再每次都回到一半左右\n6. iPhone 加到桌面的应用播 MKV/AVI 时直接转码，不再先白等半分钟",
+          "updated_at": "2026-11-17T06:31:32Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.14/meow_1.2.14_x86.fpk",
+              "sha256": "448ed3288ea5fef69c14c22050b11a95c8a378ff486f7c276aba47def70c54f3",
+              "size": 21992003
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.14/meow_1.2.14_arm.fpk",
+              "sha256": "8adcb9675f8a44dad28f0e50330e6c6e7a344c015474d000a5f7437d2796cfec",
+              "size": 21955043
+            }
+          }
+        },
+        "1.2.15": {
+          "changelog": "1. 电脑窄窗口里焦点环恢复正常，按方向键能看到当前选中项\n2. PC、TV、fnOS 的端判断统一，只显示本端真实可用的更新入口\n3. TV 更新中心按能力显示运行时模块，老设备不再出现不可用条目\n4. 触摸屏电脑上鼠标双击全屏、手指双击快进，不再互相干扰\n5. 平板竖屏顶栏只留图标，横屏恢复文字，源分类下拉不再被挤掉\n6. 矮屏海报列数与行距统一，历史、收藏页跟随首页列数",
+          "updated_at": "2026-11-17T11:41:33Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.15/meow_1.2.15_x86.fpk",
+              "sha256": "7379f3d461a39f99296d4c4a2b25830ec4fb02deedeef3401e3a925796e6e7a9",
+              "size": 21990852
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.15/meow_1.2.15_arm.fpk",
+              "sha256": "2369a183c891d09ea2581dae1fde3ef9a452182ce1a41e2873706949d9922800",
+              "size": 21955359
+            }
+          }
+        },
+        "1.2.16": {
+          "changelog": "1. 电视顶栏源分类不再被挤掉，搜索和设置固定在右侧\n2. 电脑窄窗口、平板竖屏的顶栏与海报宽度恢复正常\n3. TV 设置页方向键可以正常翻页，老款电视和投影也能滚到底\n4. 投影仪 logo 聚焦框变圆角，播放页弹幕搜索图标居中\n5. AI 助手「设置」直达 AI 配置；添加片库改为页内弹框且打开即选中第一项\n6. 播放页刷新改为续播；竖屏 TV 恢复返回按钮，横屏电视仍隐藏",
+          "updated_at": "2026-11-18T04:20:42Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.16/meow_1.2.16_x86.fpk",
+              "sha256": "40189c2857e403c0a5b3eceb62eb84a50e3951609d122371ddd83e5f51183cf7",
+              "size": 21989530
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.16/meow_1.2.16_arm.fpk",
+              "sha256": "0d299d9ddc4cc3fe0dedfaef5e030d686f7faedc764baafdc756bc31ebc44941",
+              "size": 21954434
+            }
+          }
+        },
+        "1.2.17": {
+          "changelog": "1. 首页顶部新增「继续观看」：接着上次看到的位置，并显示剧情简介与评分\n2. 电脑版换成无边框窗口：左上角红黄绿、可拖动最大化，窗口大小位置会记住\n3. 新增中性灰 Graphite 主题，顶栏在内容滚动时改为毛玻璃\n4. 详情页加上氛围底色与更大的片名排版，列表为空或出错时有明确说明\n5. 电脑上按 Ctrl+F 直接搜索，片库支持横向滚轮翻分类\n6. 电视与投影按屏幕高度自适应首屏：一屏能看到完整一行海报，顶栏文字恢复",
+          "updated_at": "2026-11-18T11:01:40Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.17/meow_1.2.17_x86.fpk",
+              "sha256": "3e223d75386bd54a9347e27d6240e2b88e98a73020bde2f963191373dcc4aaff",
+              "size": 22137282
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.17/meow_1.2.17_arm.fpk",
+              "sha256": "e21f1583d06e187a1762b1eb9d0f04911fddcaae801272c0cbb6b092aeddf0df",
+              "size": 22102595
+            }
+          }
+        },
+        "1.2.18": {
+          "changelog": "1. 电脑全屏播放四周不再漏一条 1 像素的亮边\n2. 在线更新更快：优先走上次成功的线路，清单并发取最快，慢线路自动换线\n3. 弹幕解析快一倍、4K 播放缓冲按设备自动收窄，长时间播放更省内存\n4. 弹幕跳转或换集不再整屏重打；新增时间校准（±30 秒，按片/集记住）\n5. 搜索一次出几百条时首屏更快，离开搜索页不再后台空轮询\n6. NAS 上长时间播放更稳：弹幕缓存设上限，后端线程及时回收",
+          "updated_at": "2026-11-19T05:27:22Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.18/meow_1.2.18_x86.fpk",
+              "sha256": "e37960225e5b88ceff4918f604ea885b583ec510f5666d6b27278417d47df074",
+              "size": 22140118
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.18/meow_1.2.18_arm.fpk",
+              "sha256": "d7d3d344e97238d4bf2c5a3e7b93e5827f0b97b267308a88a63759951ef6ac1d",
+              "size": 22106926
+            }
+          }
+        },
+        "1.2.19": {
+          "changelog": "1. 投影仪原生播放器：4K 硬解更稳，弹幕跟随网页的透明度/字号/速度/区域/屏蔽词\n2. 原生播放器退出后自动记录进度，下次从上次位置继续\n3. 弹幕顶部/底部与滚动分轨，密集时不再叠字\n4. 转码等待可看进度、可停止；切集或离开会自动取消后端任务\n5. 4K 无硬解直接提示换线路；支持硬解的 NAS 可硬解转 1080p\n6. 设置页修复关闭后端插件后扫描地址存不下、重连仍用旧地址",
+          "updated_at": "2026-11-20T08:33:44Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.19/meow_1.2.19_x86.fpk",
+              "sha256": "432e36994866675f2b18a150f6a8dfab4bd3c9502d717811d556701776ab35a6",
+              "size": 22152562
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.19/meow_1.2.19_arm.fpk",
+              "sha256": "28de65bc663fdac925bce91e2c12e33c2de0141700b112e29543de52d2801aae",
+              "size": 22119956
+            }
+          }
+        },
+        "1.2.20": {
+          "changelog": "1. 片库：应用内目录树选目录，直接列出飞牛授权的文件夹，不用再手打路径\n2. 同一目录不能重复加库；父子目录重叠会提示，避免重复扫描\n3. 飞牛套件：补齐分发信息，更新说明随版本自动生成",
+          "updated_at": "2026-11-20T10:47:04Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.20/meow_1.2.20_x86.fpk",
+              "sha256": "27f778f5c2efe9148e7eaa49b43f927b2894c1b22346c043d1079e23a8450efc",
+              "size": 22157957
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.20/meow_1.2.20_arm.fpk",
+              "sha256": "15cede7a9adbf926139a94c3c792e9978d8ac331d42f6d6854eb1ef34cba4e17",
+              "size": 22123893
+            }
+          }
+        },
+        "1.2.21": {
+          "changelog": "1. 飞牛套件：应用中心更新说明正常换行，不再每行末尾多一个反斜杠\n2. 播放器：修好片尾切集后连跳好几集的问题，下一集从开头正常播放\n3. 时间轴弹幕密度条：鼠标移过进度条时不再上下抖动",
+          "updated_at": "2026-11-20T14:27:09Z",
+          "os_min_version": "1.2.0",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/meow_1.2.21_x86.fpk",
+              "sha256": "7cccd72e6f819f7d53c9acb94727ee0ac73d077c2a91dac436908dc74a4aeccf",
+              "size": 22162158
+            },
+            "arm": {
+              "download_url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/meow_1.2.21_arm.fpk",
+              "sha256": "99fc76ab87c06376dbed9ffcd6d70e8c6f66e66321bfe5f7f1b45529ad377507",
+              "size": 22125129
+            }
+          }
+        }
+      }
+    }
+  }
+}
