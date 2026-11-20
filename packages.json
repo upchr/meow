@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-20T14:27:40Z",
+  "author": { "name": "meow", "url": "https://github.com/upchr/meow" },
+  "min_app_version": "0.6.0",
+  "source_tag": "release-v1.2.21",
+  "packages": {
+    "meow-pc": {
+      "display_name": "PC 安装包",
+      "version": "1.2.21",
+      "platform": ["windows-x64"],
+      "desc": "1. 飞牛套件：应用中心更新说明正常换行，不再每行末尾多一个反斜杠\n2. 播放器：修好片尾切集后连跳好几集的问题，下一集从开头正常播放\n3. 时间轴弹幕密度条：鼠标移过进度条时不再上下抖动",
+      "size": 5830595,
+      "sha256": "d546c1b0fcb6971effa039f28db21d0d79dd911257b54f800326b791da642ace",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/meow-setup-1.2.21.exe",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-20"
+    },
+    "meow-tv": {
+      "display_name": "TV 安装包",
+      "version": "1.2.21",
+      "platform": ["android-arm64","android-armv7","android-x86_64"],
+      "desc": "1. 飞牛套件：应用中心更新说明正常换行，不再每行末尾多一个反斜杠\n2. 播放器：修好片尾切集后连跳好几集的问题，下一集从开头正常播放\n3. 时间轴弹幕密度条：鼠标移过进度条时不再上下抖动",
+      "size": 21545072,
+      "sha256": "4b02ac922cf2ff4389afbbc8b5e3601a527e3c506a6cb50a2a9f00d85f8b9b3d",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/meow-TV-1.2.21.apk",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-20"
+    },
+    "apiserver": {
+      "display_name": "apiserver 安装包",
+      "version": "1.2.21",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 apiserver 1.1.6",
+      "size": 32920289,
+      "sha256": "865c10ca878b5a96e20142a3778f1e0cb140b160044ff46a8b00d5077479f5e2",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/apiserver-1.2.21.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-20"
+    },
+    "tv-node-arm64-v8a": {
+      "display_name": "tv-node-arm64-v8a 安装包",
+      "version": "18.20.4.1",
+      "platform": ["android-arm64-v8a"],
+      "desc": "TV 运行时模块 arm64-v8a 18.20.4.1",
+      "size": 52116312,
+      "sha256": "53f59d4815a27fc3f989e4ddbe8f6cf1ebcdfdb2e30f4ffd835527426d8469d4",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/tv-node-arm64-v8a-18.20.4.1.apk",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-10"
+    },
+    "tv-node-armeabi-v7a": {
+      "display_name": "tv-node-armeabi-v7a 安装包",
+      "version": "18.20.4.1",
+      "platform": ["android-armeabi-v7a"],
+      "desc": "TV 运行时模块 armeabi-v7a 18.20.4.1",
+      "size": 47942310,
+      "sha256": "4a03d317048b96bc8aba43ed473e557b72ee35b12821d837d952dbc176a18075",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/tv-node-armeabi-v7a-18.20.4.1.apk",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-10"
+    },
+    "tv-node-x86_64": {
+      "display_name": "tv-node-x86_64 安装包",
+      "version": "18.20.4.1",
+      "platform": ["android-x86_64"],
+      "desc": "TV 运行时模块 x86_64 18.20.4.1",
+      "size": 56644983,
+      "sha256": "40422498b25370787a9caadb7f407c2953890a2e5a327fca1624da23d52b3fc7",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/tv-node-x86_64-18.20.4.1.apk",
+      "requires": [],
+      "hidden": true,
+      "lasttime": "2026-11-10"
+    },
+    "danmu-api": {
+      "display_name": "danmu-api 安装包",
+      "version": "1.0.0",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 danmu-api 1.0.0",
+      "size": 11436663,
+      "sha256": "1c7e734312fbfe5ed0d6f78330176308fd3ccffe1e34001eea6076a4a3881e9d",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/danmu-api-1.0.0.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-20"
+    },
+    "drpy": {
+      "display_name": "drpy 安装包",
+      "version": "0.1.0",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 drpy 0.1.0",
+      "size": 4027646,
+      "sha256": "fb8953a024d2ae084e4b04095834f384f17a90f72c696fb171720b45f772152c",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/drpy-0.1.0.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-20"
+    },
+    "ffmpeg": {
+      "display_name": "ffmpeg 安装包",
+      "version": "9.0.2",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 ffmpeg 9.0.2",
+      "size": 40455602,
+      "sha256": "f680b0b5445ab3e9de1567e10f34922c8cc8dd1f12342151e7aaa27be0cfb50f",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/ffmpeg-9.0.2.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-20"
+    },
+    "node": {
+      "display_name": "node 安装包",
+      "version": "22.23.5",
+      "platform": ["windows-x64"],
+      "desc": "猫窝插件 node 22.23.4",
+      "size": 33212739,
+      "sha256": "9c6d8f673d0becf0bde9babb541e7fcefa68ec90256740e9f15fdd0ab07ee09b",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/node-22.23.5.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-20"
+    },
+    "danmu-payload": {
+      "display_name": "弹幕组件",
+      "version": "1.0.0",
+      "platform": ["android"],
+      "desc": "猫窝弹幕组件 1.0.0",
+      "size": 11436663,
+      "sha256": "1c7e734312fbfe5ed0d6f78330176308fd3ccffe1e34001eea6076a4a3881e9d",
+      "url": "https://github.com/upchr/meow/releases/download/release-v1.2.21/danmu-api-1.0.0.zip",
+      "requires": [],
+      "hidden": false,
+      "lasttime": "2026-11-20"
+    }
+  }
+}
