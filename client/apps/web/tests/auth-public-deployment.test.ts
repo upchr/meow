@@ -368,3 +368,25 @@ describe('fnOS 网关身份与本地片库目录树（2026-11-20）', () => {
     expect(cb).toContain('library.json')
   })
 })
+
+describe('片库「选择目录」的语义与 TV 焦点（2026-11-20）', () => {
+  it('本地选择器只在本机后端时出现（远程后端读不到本机路径）', () => {
+    const dlg = src('components/library/LibraryAddDialog.vue')
+    expect(dlg).toContain('backendIsLocal')
+    // 系统选择器按钮 + TV 端内桥都必须被 localBackend gate
+    expect(dlg).toMatch(/onDesktop && localBackend/)
+    expect(dlg).toMatch(/localBackend && tvDirBridge\(\)/)
+    expect(repo('client/apps/web/src/api/index.ts')).toContain('export function backendIsLocal')
+  })
+
+  it('TV 焦点落到第一个目录（pin=true）、空根自动跳过、返回逐级退', () => {
+    const dlg = src('components/library/LibraryAddDialog.vue')
+    expect(dlg).toContain('focusFirstDir')
+    // pin=true：false 时按键不接管焦点（tv-nav 只在 pinned 时走几何移动）
+    expect(dlg).toMatch(/if \(f\) f\(el, true\)/)
+    // 右栏空时焦点要有去处（否则连换根都做不到）
+    expect(dlg).toContain('pickerRootsEl')
+    // 返回键：子目录里先回上一层，到根才关弹窗
+    expect(dlg).toMatch(/pickerStack\.value\.length > 0[\s\S]{0,80}upDir\(\)/)
+  })
+})

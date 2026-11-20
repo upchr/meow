@@ -1289,6 +1289,23 @@ export function apiBase(): string {
   return base()
 }
 
+/**
+ * 后端是不是跑在**这台机器**上。
+ *
+ * <p>为什么要专门判：片库的 `base` 是**后端那台机器**上的路径。只有后端在本机时，
+ * 它才读得到"系统文件夹选择器 / TV 的 meowTv.listDirs"选出来的路径。TV 连远程
+ * NAS、PC 连远程后端时，这两个本机选择器给出的路径后端一定打不开 —— 不判就会
+ * 让用户选完才发现"目录不存在"。
+ *
+ * <p>★ 同源（apiBase 为空串）一律按"远程"处理：Docker / Web 部署时页面与后端同源，
+ * 但后端在容器里，`D:/影视` 这种宿主机路径它读不到。
+ */
+export function backendIsLocal(): boolean {
+  const b = apiBase()
+  if (!b) return false
+  return isLoopbackUrl(b)
+}
+
 /** 是否运行在 Tauri 桌面壳里（main.ts 判断要不要等 sidecar 就绪） */
 export function isDesktop(): boolean {
   return isDesktopShell()

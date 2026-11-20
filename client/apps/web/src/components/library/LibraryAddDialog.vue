@@ -17,7 +17,7 @@
  * 编辑时跳过类型选择、直接进表单，密码框留空表示不修改。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { isDesktop } from '@/api'
+import { backendIsLocal, isDesktop } from '@/api'
 import { fetchLibrary, fetchLibraryRoots, listLibraryRoot, saveLibrary, testLibrary, type LibraryInfo, type LibraryRoot } from '@/api/library'
 
 const props = withDefaults(defineProps<{ editId?: string }>(), { editId: '' })
@@ -96,10 +96,19 @@ async function focusFirst(pin = true) {
   el.focus()
 }
 
-/** 地址框的占位示例：三种类型写法完全不同，给错了用户会照着填错 */
+/**
+ * 地址框的占位示例：三种类型写法完全不同，给错了用户会照着填错。
+ *
+ * <p>本地目录还要再分一层：后端在**这台机器**（PC 插件 / TV 本机网关）时可以填
+ * 本机路径，后端在 NAS / 容器里时只能填**它那台机器**上的路径 —— 否则用户会
+ * 照示例填 `D:/影视`，然后永远"目录不存在"。
+ */
+const localBackend = backendIsLocal()
 const basePlaceholder = computed(() => {
   if (type.value === 'smb') return 'smb://192.168.1.19/视频'
-  if (type.value === 'local') return 'D:/影视  或  /mnt/media'
+  if (type.value === 'local') {
+    return localBackend ? 'D:/影视  或  /mnt/media' : '服务器上的路径，例如 /vol02/1000-0-xxx/电影'
+  }
   return 'http://192.168.1.19:5005/'
 })
 
@@ -209,6 +218,32 @@ const pickerRoot = computed(
   () => pickerRoots.value.find((r) => r.id === pickerRootId.value) || null,
 )
 
+/** 右栏容器（TV 焦点要落到第一个目录项，而不是弹窗头部的「上一级」） */
+const pickerListEl = ref<HTMLElement | null>(null)
+/** 左栏容器（右栏是空目录时的焦点兜底） */
+const pickerRootsEl = ref<HTMLElement | null>(null)
+
+/**
+ * 打开弹窗 / 进目录 / 换根之后，把 TV 焦点补到**第一个目录**。
+ *
+ * <p>tv-nav 只在弹层打开那一刻找一次 `data-tv-first`，而这里的列表是异步
+ * 加载的；不补这一下，焦点会停在「上一级」——在根目录时按它没有任何反应，
+ * 用户会以为遥控器失灵（同 AccountDialog 的两拍做法）。
+ *
+ * <p>右栏是空目录时退到左栏第一个根：否则焦点无处可去，用户连换根都做不到。
+ */
+function focusFirstDir() {
+  void nextTick(() => {
+    const el = (pickerListEl.value?.querySelector('button') ||
+      pickerRootsEl.value?.querySelector('button') ||
+      null) as HTMLElement | null
+    if (!el) return
+    const f = tvNav()
+    if (f) f(el, true)
+    else el.focus?.()
+  })
+}
+
 /** 当前所在目录的绝对路径（回填 form.base 用） */
 const pickerAbs = computed(() => {
   if (pickerMode.value === 'tv') return pickerPath.value
@@ -241,6 +276,7 @@ async function lsHttp(rootId: string, rel: string) {
     pickerHint.value = e instanceof Error ? e.message : String(e)
   } finally {
     pickerLoading.value = false
+    focusFirstDir()
   }
 }
 
@@ -253,6 +289,7 @@ function loadDirs(path: string) {
     pickerDirs.value = []
   }
   pickerPath.value = path
+  focusFirstDir()
 }
 
 async function openPicker(ev?: Event) {
@@ -274,10 +311,29 @@ async function openPicker(ev?: Event) {
     pickerRoots.value = roots
     pickerRootId.value = roots[0].id
     await lsHttp(roots[0].id, '')
+    /*
+     * 第一个根常常是「应用共享目录」（fnOS 的 @appshare/meow/library，装完就是空的），
+     * 用户真正想找的影视目录排在后面。默认停在空目录 = 一打开就是"没有子目录"，
+     * 用户会以为没识别到 —— 所以自动跳到第一个**有内容**的根。
+     */
+    if (!pickerDirs.value.length && roots.length > 1) {
+      for (const r of roots.slice(1)) {
+        await lsHttp(r.id, '')
+        if (pickerDirs.value.length) {
+          pickerRootId.value = r.id
+          break
+        }
+      }
+    }
     return
   }
 
-  if (tvDirBridge()) {
+  /*
+   * 端内桥只在「后端就在这台机器」时才有意义：它返回的是 Android 视角的路径，
+   * 远程后端（NAS / Docker / 另一台 PC）读不到。TV 连远程后端时跳过它，
+   * 让下面的空态文案告诉用户该去哪授权。
+   */
+  if (localBackend && tvDirBridge()) {
     refreshAllFiles()
     if (!tvAllFiles.value) {
       askAllFiles()
@@ -291,8 +347,9 @@ async function openPicker(ev?: Event) {
 
   // 什么都没有：给引导文案，不做空白弹窗（用户会以为坏了）
   pickerMode.value = 'http'
-  pickerHint.value =
-    '这台服务器没有可浏览的目录。fnOS：到「应用设置 → 访问权限」添加文件夹；Docker：在 compose 里挂载目录并设 MEOW_LIBRARY_ROOTS。'
+  pickerHint.value = localBackend
+    ? '本机后端没有可浏览的目录。可以手填绝对路径，或用「系统文件夹选择器」。'
+    : '后端（NAS / Docker）没有可浏览的目录。\nfnOS：到「应用设置 → 访问权限」添加文件夹；\nDocker：在 compose 里挂载目录并设 MEOW_LIBRARY_ROOTS。'
 }
 
 function closeTvPicker() {
@@ -437,6 +494,11 @@ function onKey(e: KeyboardEvent) {
   }
   e.preventDefault()
   if (pickerOpen.value) {
+    // 返回键逐级退：在子目录里先回上一级，到根了才关弹窗（TV 遥控器的预期）
+    if (pickerStack.value.length > 0) {
+      upDir()
+      return
+    }
     closeTvPicker()
     return
   }
@@ -594,22 +656,27 @@ onBeforeUnmount(() => {
         <div v-if="type === 'local'" class="rounded-lg border border-line bg-field/40 px-3 py-2">
           <div class="flex flex-wrap items-center gap-2">
             <button
-              v-if="onDesktop"
+              type="button"
+              class="rounded-md bg-card px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
+              @click="openPicker"
+            >
+              浏览目录…
+            </button>
+            <!-- 系统选择器只在「后端就在这台机器」时出现：远程后端读不到本机路径 -->
+            <button
+              v-if="onDesktop && localBackend"
               type="button"
               class="rounded-md bg-card px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
               @click="pickNativeDir"
             >
               系统文件夹选择器…
             </button>
-            <button
-              type="button"
-              class="rounded-md bg-accent/15 px-3 py-1.5 text-sm font-medium text-accent transition hover:bg-accent/25"
-              @click="openPicker"
-            >
-              浏览目录…
-            </button>
             <span class="text-[length:var(--fs-mini)] text-ink-3">
-              选完自动填上面的地址；也可以手动填/粘贴路径
+              {{
+                localBackend
+                  ? '选完自动填上面的地址；也可以手动填/粘贴路径'
+                  : '列的是服务器上的目录；手填时路径也必须存在于服务器'
+              }}
             </span>
           </div>
         </div>
@@ -694,7 +761,7 @@ onBeforeUnmount(() => {
     <div
       v-if="pickerOpen"
       data-tv-scope
-      class="fixed inset-0 z-[130] grid place-items-center bg-black/55 px-5 py-8"
+      class="fixed inset-0 z-[130] grid place-items-center bg-black/70 p-4 sm:p-6"
       @click.self="closeTvPicker"
     >
       <div
@@ -710,7 +777,10 @@ onBeforeUnmount(() => {
           >
             上一级
           </button>
-          <div class="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-mini)] text-ink-3">
+          <div
+            data-picker-path
+            class="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-mini)] text-ink-3"
+          >
             {{ pickerAbs || (pickerMode === 'tv' ? '存储卷' : '选择目录') }}
           </div>
           <button
@@ -726,6 +796,7 @@ onBeforeUnmount(() => {
                只有一个根时不必占地方，但**不能隐藏**——TV 上就是靠它换存储卷。 -->
           <div
             v-if="pickerRoots.length > 1"
+            ref="pickerRootsEl"
             class="w-28 shrink-0 overflow-y-auto border-r border-line p-1.5"
           >
             <button
@@ -744,7 +815,7 @@ onBeforeUnmount(() => {
               {{ r.label }}
             </button>
           </div>
-          <div class="min-h-0 flex-1 overflow-y-auto p-2">
+          <div ref="pickerListEl" class="min-h-0 flex-1 overflow-y-auto p-2">
             <button
               v-for="d in pickerDirs"
               :key="d.path"
