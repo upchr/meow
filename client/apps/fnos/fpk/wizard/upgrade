@@ -32,7 +32,7 @@
         "field": "wizard_port",
         "label": "Web 入口端口",
         "initValue": "30010",
-        "helpText": "桌面与网页入口端口，局域网需可访问。",
+        "helpText": "桌面与网页入口端口。默认只监听本机；要让局域网设备直连需改 etc/meow.conf 的 MEOW_SHELL_BIND。",
         "rules": [
           { "required": true, "message": "请填写端口" },
           { "pattern": "^[0-9]+$", "message": "只能填数字" },

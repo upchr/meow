@@ -12,7 +12,12 @@ CONF="$TRIM_PKGETC/meow.conf"
 # 向导值优先（安装/配置时由 fnOS 注入同名环境变量）
 PORT="${wizard_port:-${MEOW_SHELL_PORT:-${TRIM_SERVICE_PORT:-30010}}}"
 API_PORT="${wizard_api_port:-${MEOW_API_PORT:-30011}}"
-BIND="${MEOW_SHELL_BIND:-0.0.0.0}"
+# ★ 默认只监听回环：30010 一旦对 0.0.0.0 开放，就等于绕过 fnOS 统一网关。
+#   网关身份头（X-Trim-*）在 TCP 入口被 meowd 主动剥掉（见
+#   meowd/src/http.rs 的 set_peer_addr），所以直连 30010 的人拿不到身份，
+#   只能走 meow 自己的鉴权。要局域网直连（TV 远程、手机）必须显式：
+#     MEOW_SHELL_BIND=0.0.0.0  +  MEOW_AUTH_MODE=on
+BIND="${MEOW_SHELL_BIND:-127.0.0.1}"
 
 # ── 日志：用户可见的那份 + 启动前裁剪 ─────────────────────────────────────
 # 用户看得到的那份在 @appshare/<app>/logs（目录由 cmd/log_share_setup 以 root 建，
@@ -187,6 +192,17 @@ start)
     trim_logs
 
     rm -f "$PIDFILE"
+
+    # 对外监听范围与鉴权是否匹配：不匹配只告警、不阻断（用户可能故意这么配）
+    if [ "$BIND" != "127.0.0.1" ] && [ "$BIND" != "::1" ]; then
+        if [ "${MEOW_AUTH_MODE:-}" = "on" ]; then
+            printf '[%s] [info] MEOW_SHELL_BIND=%s 对局域网开放，鉴权已开（账号密码/设备令牌）\n' \
+                "$(date '+%F %T')" "$BIND" >>"$LOG" 2>/dev/null
+        else
+            printf '[%s] [warn] MEOW_SHELL_BIND=%s 对局域网开放，但 MEOW_AUTH_MODE 未开：同网段任何人都能读写你的配置与收藏（fnOS 网关身份在 TCP 入口已被剥离，帮不上忙）\n' \
+                "$(date '+%F %T')" "$BIND" >>"$LOG" 2>/dev/null
+        fi
+    fi
 
     # meowd 自己会写 pid 文件并 setsid 脱离本脚本会话
     nohup "$TRIM_APPDEST/bin/meowd" \

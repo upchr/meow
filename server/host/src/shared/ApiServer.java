@@ -1350,14 +1350,60 @@ public class ApiServer {
         return "{\"code\":-1,\"msg\":\"unauthorized\",\"reason\":\"" + reason + "\"}";
     }
 
-    private static core.Auth.Result requireAccountAdmin(HttpExchange ex) throws IOException {
+    /**
+     * 非管理员不能碰的写操作：改配置、改片库、导源、改直播源、清缓存。
+     *
+     * <p>刻意**不含** {@code /api/state/*} —— 进度/收藏/偏好是每个用户自己的数据，
+     * 而且 state 落盘已经按 fnOS uid 分了命名空间（见 {@code Auth.stateScope}）。
+     * 把普通用户连自己的历史都写不了，等于"能看不能续播"，那比不给登录还糟。
+     */
+    private static boolean adminOnlyWrite(String method, String path) {
+        if (core.Auth.isReadMethod(method)) return false;
+        if (path.startsWith("/api/state/")) return false;
+        return path.equals("/api/config/import")
+                || path.equals("/api/lives")
+                || path.equals("/api/policy")
+                || path.equals("/api/webdav")
+                || path.startsWith("/api/library")
+                || path.startsWith("/api/cache")
+                || path.startsWith("/api/transcode")
+                || path.startsWith("/api/plugins")
+                || path.startsWith("/api/llm");
+    }
+
+    /**
+     * 会话/设备令牌鉴权；网关首请求按 {@code X-Trim-*} 免密兜底。
+     *
+     * <p>兜底只在 {@code no_credentials} 时触发：已有 Cookie 却过期/被撤销/
+     * 改过密码时不自动续，否则"撤销设备"和"改密踢下线"会被网关顺手绕过。
+     */
+    private static core.Auth.Result authenticateOrFnos(HttpExchange ex) {
         core.Auth.Result r = core.Auth.authenticate(ex);
+        if (r.ok || !"no_credentials".equals(r.reason)) return r;
+        core.FnosIdentity.Who who = core.FnosIdentity.from(ex);
+        if (who == null) return r;
+        String sid = core.Auth.sessionForFnos(who);
+        core.Auth.setSessionCookie(ex, sid);
+        core.Auth.event("fnos_login",
+                "uid=" + who.uid + " user=" + who.name + " admin=" + who.admin, ex);
+        return core.Auth.Result.fnosOk();
+    }
+
+    private static core.Auth.Result requireAccountAdmin(HttpExchange ex) throws IOException {        core.Auth.Result r = core.Auth.authenticate(ex);
         if (!r.ok) {
             sendJson(ex, 401, unauthorizedJson(r));
             return null;
         }
         if (!"full".equals(r.scope)) {
             sendJson(ex, 403, "{\"code\":-1,\"msg\":\"full-scope token required\"}");
+            return null;
+        }
+        /*
+         * fnOS 普通用户（X-Trim-Isadmin=false）能进门、能看、能播，但不能改
+         * 策略/片库/导入源 —— 网关只保证"他登录了 fnOS"，业务权限归 meow 判。
+         */
+        if (!core.Auth.isAdminContext(ex)) {
+            sendJson(ex, 403, "{\"code\":-1,\"msg\":\"需要管理员权限\"}");
             return null;
         }
         return r;
@@ -1452,15 +1498,18 @@ public class ApiServer {
             }
             if ("/api/auth/me".equals(path)) {
                 // 会话或设备令牌都认：TV/PC 壳用令牌连接时也会问这一句
-                core.Auth.Result r = core.Auth.authenticate(ex);
+                core.Auth.Result r = authenticateOrFnos(ex);
                 if (!r.ok) {
                     sendJson(ex, 401, unauthorizedJson(r));
                     return true;
                 }
                 JSONObject o = new JSONObject().put("ok", true)
-                        .put("user", core.Auth.username())
+                        // 网关会话显示 fnOS 用户名；其余是管理员名
+                        .put("user", core.Auth.currentUser(ex))
                         .put("scope", r.scope)
                         .put("mode", core.Auth.authMode())
+                        // 普通用户（fnOS isAdmin=false）前端要藏掉改配置的入口
+                        .put("admin", core.Auth.isAdminContext(ex))
                         // 设备/会话数量：改密和"退出所有设备"前给用户看影响面
                         .put("devices", core.Auth.listDevices().length())
                         .put("sessions", core.Auth.sessionCount())
@@ -1802,13 +1851,22 @@ public class ApiServer {
                     return;
                 }
             } else {
-                core.Auth.Result ar = core.Auth.authenticate(ex);
+                core.Auth.Result ar = authenticateOrFnos(ex);
                 if (!ar.ok) {
                     sendJson(ex, 401, unauthorizedJson(ar));
                     return;
                 }
                 if ("read".equals(ar.scope) && !core.Auth.isReadMethod(method)) {
                     sendJson(ex, 403, "{\"code\":-1,\"msg\":\"read-only token\"}");
+                    return;
+                }
+                /*
+                 * fnOS 普通用户（X-Trim-Isadmin=false）：能看、能播、能改自己的
+                 * 进度与收藏，但改策略 / 片库 / 导入源 / 直播源这类配置要管理员。
+                 * 网关只保证"他登录了 fnOS"，业务权限归 meow 判（见文档 §4.1）。
+                 */
+                if (!core.Auth.isAdminContext(ex) && adminOnlyWrite(method, path)) {
+                    sendJson(ex, 403, "{\"code\":-1,\"msg\":\"需要管理员权限\"}");
                     return;
                 }
             }
@@ -9756,6 +9814,23 @@ public class ApiServer {
      * 被浏览器当混合内容拦掉。
      */
     private static String baseUrlFor(HttpExchange ex) {
+        /*
+         * 显式声明的对外地址优先（最高优先级，设了就完全不信请求头）。
+         *
+         * Host / X-Forwarded-Host / Origin 全是客户端可控值，而分片地址拼错一次
+         * 整条播放就废（Host 丢端口 → 302 到登录页，实测 fnOS 5666）。反代/NAT
+         * 后面运维知道真实地址，让他钉死比让程序猜安全。
+         *
+         * 值可以带也可以不带子路径（/app/meow），带了就不会重复拼。
+         */
+        String pinned = System.getenv("MEOW_PUBLIC_BASE");
+        if (pinned != null && !pinned.trim().isEmpty()) {
+            String p = pinned.trim().replaceAll("/+$", "");
+            String prefix = forwardedPrefix(ex);
+            if (!prefix.isEmpty() && !p.endsWith(prefix)) p = p + prefix;
+            return p;
+        }
+
         String host = ex.getRequestHeaders().getFirst("Host");
         if (host == null || host.isEmpty()) host = "127.0.0.1:9979";
         String proto = ex.getRequestHeaders().getFirst("X-Forwarded-Proto");

@@ -282,3 +282,77 @@ describe('来源 IP、密码可用范围与 fpk 配置（2026-11-20）', () => {
     expect(repo('client/apps/fnos/fpk/cmd/upgrade_callback')).toContain('MEOW_TRUST_PROXY')
   })
 })
+
+describe('fnOS 网关身份与本地片库目录树（2026-11-20）', () => {
+  it('meowd 双 listener 分权：TCP 删 X-Trim，socket 打 fnos-gateway', () => {
+    const http = repo('client/apps/fnos/meowd/src/http.rs')
+    expect(http).toContain('x-trim-userid')
+    expect(http).toContain('x-meow-ingress')
+    expect(http).toContain('fnos-gateway')
+    // socket 路由必须真的挂上标记中间件，否则 Java 永远不认网关头
+    expect(http).toMatch(/build_gateway_router[\s\S]{0,800}mark_gateway_ingress/)
+  })
+
+  it('Java 只在 ingress=fnos-gateway 且 uid 纯数字时才认身份', () => {
+    const f = repo('server/host/src/shared/core/FnosIdentity.java')
+    expect(f).toContain('INGRESS_GATEWAY')
+    expect(f).toContain('X-Trim-Userid')
+    expect(f).toContain('[0-9]+')
+  })
+
+  it('30010 默认只听回环，要局域网直连必须显式声明', () => {
+    const main = repo('client/apps/fnos/fpk/cmd/main')
+    expect(main).toContain('MEOW_SHELL_BIND:-127.0.0.1')
+    expect(main).toContain('MEOW_AUTH_MODE')
+  })
+
+  it('对外地址可被 MEOW_PUBLIC_BASE 钉死', () => {
+    expect(repo('server/host/src/shared/ApiServer.java')).toContain('MEOW_PUBLIC_BASE')
+  })
+
+  it('状态按 fnOS uid 分命名空间，无 uid 仍用全局（兼容 Docker/PC/TV）', () => {
+    expect(repo('server/host/src/shared/routes/StateRoutes.java')).toContain('core.Auth.stateScope(ex)')
+    expect(repo('server/host/src/shared/core/Auth.java')).toContain('users/')
+  })
+
+  it('fnOS 授权目录透传给 Java（否则片库弹窗永远空）', () => {
+    const sup = repo('client/apps/fnos/meowd/src/supervisor.rs')
+    expect(sup).toContain('TRIM_DATA_ACCESSIBLE_PATHS')
+    expect(sup).toContain('MEOW_ALLOWED_PATHS')
+    expect(sup).toContain('TRIM_DATA_SHARE_PATHS')
+    expect(sup).toContain('MEOW_SHARE_PATHS')
+  })
+
+  it('目录树三端点在 lib 分支之前分发（否则被"返回配置"吃掉）', () => {
+    const r = repo('server/host/src/shared/routes/LibraryRoutes.java')
+    const iAction = r.indexOf('"roots".equals(action)')
+    const iLib = r.indexOf('String libId = Api.trimToEmpty(q.get("lib"))')
+    expect(iAction).toBeGreaterThan(0)
+    expect(iLib).toBeGreaterThan(iAction)
+    expect(r).toContain('"capabilities".equals(action)')
+    expect(r).toContain('lsWithTimeout')
+  })
+
+  it('路径穿越与根去重都有护栏', () => {
+    const roots = repo('server/host/src/shared/core/LibraryRoots.java')
+    expect(roots).toContain('toRealPath')
+    expect(roots).toContain('startsWith(root)')
+    const lib = repo('server/host/src/shared/core/Library.java')
+    expect(lib).toContain('DUP_ROOT')
+    expect(lib).toContain('overlaps')
+  })
+
+  it('片库弹窗：浏览目录 + 根栏 + 空态引导', () => {
+    const dlg = src('components/library/LibraryAddDialog.vue')
+    expect(dlg).toContain('openPicker')
+    expect(dlg).toContain('pickerRoots')
+    expect(dlg).toContain('data-tv-scope')
+    expect(dlg).toContain('MEOW_LIBRARY_ROOTS')
+  })
+
+  it('wizard_library_mode 不再是死选项', () => {
+    const cb = repo('client/apps/fnos/fpk/cmd/install_callback')
+    expect(cb).toContain('wizard_library_mode')
+    expect(cb).toContain('library.json')
+  })
+})

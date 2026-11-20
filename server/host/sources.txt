@@ -76,8 +76,10 @@ server/host/src/shared/core/ConfigText.java
 server/host/src/shared/core/DataPaths.java
 server/host/src/shared/core/Dex2Jvm.java
 server/host/src/shared/core/Doh.java
+server/host/src/shared/core/FnosIdentity.java
 server/host/src/shared/core/Jars.java
 server/host/src/shared/core/Library.java
+server/host/src/shared/core/LibraryRoots.java
 server/host/src/shared/core/LogBuffer.java
 server/host/src/shared/core/PosterStore.java
 server/host/src/shared/core/Scrape.java

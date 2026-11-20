@@ -18,7 +18,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { isDesktop } from '@/api'
-import { fetchLibrary, saveLibrary, testLibrary, type LibraryInfo } from '@/api/library'
+import { fetchLibrary, fetchLibraryRoots, listLibraryRoot, saveLibrary, testLibrary, type LibraryInfo, type LibraryRoot } from '@/api/library'
 
 const props = withDefaults(defineProps<{ editId?: string }>(), { editId: '' })
 const emit = defineEmits<{
@@ -129,7 +129,6 @@ function tvDirBridge(): DirBridge | null {
     return null
   }
 }
-const canTvBrowse = !!tvDirBridge()
 
 /**
  * TV 上是否已授予「所有文件访问权限」。
@@ -180,7 +179,7 @@ async function pickNativeDir() {
   }
 }
 
-/** TV：内置目录浏览器状态 */
+/** 目录浏览器状态 */
 const pickerOpen = ref(false)
 const pickerPath = ref('')
 const pickerDirs = ref<Array<{ name: string; path: string }>>([])
@@ -188,6 +187,62 @@ const pickerDirs = ref<Array<{ name: string; path: string }>>([])
 const pickerStack = ref<string[]>([])
 /** 打开浏览器前的聚焦元素：关掉后还回去，别让焦点掉到弹框顶部 */
 let pickerOpener: HTMLElement | null = null
+
+/**
+ * 弹窗的数据源，两端能力不同：
+ *   - http：后端 `/api/library?action=roots` —— 列出"本端真有权限的根"
+ *           （fpk 的授权目录/共享目录、Docker 的挂载点、PC 的盘符）
+ *   - tv  ：端内 `meowTv.listDirs`。SAF 的权限模型只有端内能处理
+ *
+ * <p>为什么 http 优先：端内桥给的是 Android 视角的路径，而远程后端（NAS、
+ * Docker）根本不在这台机器上，桥选出来的路径后端读不了。
+ */
+const pickerMode = ref<'tv' | 'http'>('tv')
+const pickerRoots = ref<LibraryRoot[]>([])
+const pickerRootId = ref('')
+/** 相对当前根的路径（http 模式） */
+const pickerRel = ref('')
+const pickerLoading = ref(false)
+const pickerHint = ref('')
+
+const pickerRoot = computed(
+  () => pickerRoots.value.find((r) => r.id === pickerRootId.value) || null,
+)
+
+/** 当前所在目录的绝对路径（回填 form.base 用） */
+const pickerAbs = computed(() => {
+  if (pickerMode.value === 'tv') return pickerPath.value
+  const r = pickerRoot.value
+  if (!r) return ''
+  const base = r.path.replace(/[\\/]+$/, '')
+  return pickerRel.value ? `${base}/${pickerRel.value}` : base
+})
+
+async function loadHttpRoots(): Promise<LibraryRoot[]> {
+  try {
+    const r = await fetchLibraryRoots()
+    return r.roots || []
+  } catch {
+    return []
+  }
+}
+
+async function lsHttp(rootId: string, rel: string) {
+  pickerLoading.value = true
+  pickerHint.value = ''
+  try {
+    const r = await listLibraryRoot(rootId, rel)
+    pickerDirs.value = (r.dirs || []).map((d) => ({ name: d.name, path: d.name }))
+    pickerRel.value = rel
+    if (r.truncated) pickerHint.value = '目录太大，只显示前 2000 项'
+  } catch (e) {
+    pickerDirs.value = []
+    pickerRel.value = rel
+    pickerHint.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    pickerLoading.value = false
+  }
+}
 
 function loadDirs(path: string) {
   const b = tvDirBridge()
@@ -200,17 +255,44 @@ function loadDirs(path: string) {
   pickerPath.value = path
 }
 
-function openTvPicker(ev?: Event) {
-  refreshAllFiles()
-  if (!tvAllFiles.value) {
-    askAllFiles()
+async function openPicker(ev?: Event) {
+  pickerOpener = ev && ev.currentTarget instanceof HTMLElement ? ev.currentTarget : null
+  pickerStack.value = []
+  pickerRoots.value = []
+  pickerRootId.value = ''
+  pickerRel.value = ''
+  pickerDirs.value = []
+  pickerHint.value = ''
+  pickerOpen.value = true
+
+  pickerLoading.value = true
+  const roots = await loadHttpRoots()
+  pickerLoading.value = false
+
+  if (roots.length) {
+    pickerMode.value = 'http'
+    pickerRoots.value = roots
+    pickerRootId.value = roots[0].id
+    await lsHttp(roots[0].id, '')
     return
   }
-  pickerOpener =
-    ev && ev.currentTarget instanceof HTMLElement ? ev.currentTarget : null
-  pickerStack.value = []
-  pickerOpen.value = true
-  loadDirs('')
+
+  if (tvDirBridge()) {
+    refreshAllFiles()
+    if (!tvAllFiles.value) {
+      askAllFiles()
+      pickerOpen.value = false
+      return
+    }
+    pickerMode.value = 'tv'
+    loadDirs('')
+    return
+  }
+
+  // 什么都没有：给引导文案，不做空白弹窗（用户会以为坏了）
+  pickerMode.value = 'http'
+  pickerHint.value =
+    '这台服务器没有可浏览的目录。fnOS：到「应用设置 → 访问权限」添加文件夹；Docker：在 compose 里挂载目录并设 MEOW_LIBRARY_ROOTS。'
 }
 
 function closeTvPicker() {
@@ -226,24 +308,42 @@ function closeTvPicker() {
 }
 
 function enterDir(p: string) {
-  pickerStack.value = [...pickerStack.value, pickerPath.value]
-  loadDirs(p)
+  pickerStack.value = [
+    ...pickerStack.value,
+    pickerMode.value === 'tv' ? pickerPath.value : pickerRel.value,
+  ]
+  if (pickerMode.value === 'tv') {
+    loadDirs(p)
+    return
+  }
+  const next = pickerRel.value ? `${pickerRel.value}/${p}` : p
+  void lsHttp(pickerRootId.value, next)
 }
 
 function upDir() {
   const st = [...pickerStack.value]
-  const prev = st.pop()
+  const prev = st.pop() ?? ''
   pickerStack.value = st
-  loadDirs(prev || '')
+  if (pickerMode.value === 'tv') loadDirs(prev)
+  else void lsHttp(pickerRootId.value, prev)
+}
+
+/** 切换根：路径栈要清空（不同根之间没有"上一级"关系） */
+function switchRoot(id: string) {
+  pickerRootId.value = id
+  pickerStack.value = []
+  pickerDirs.value = []
+  if (pickerMode.value === 'http') void lsHttp(id, '')
 }
 
 function chooseDir() {
-  if (!pickerPath.value) {
+  const abs = pickerAbs.value
+  if (!abs) {
     msgOk.value = false
     msg.value = '先进入要作为片库的那个目录，再点「选中此目录」'
     return
   }
-  form.value.base = pickerPath.value
+  form.value.base = abs
   closeTvPicker()
   msg.value = ''
 }
@@ -499,22 +599,17 @@ onBeforeUnmount(() => {
               class="rounded-md bg-card px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
               @click="pickNativeDir"
             >
-              选择文件夹…
+              系统文件夹选择器…
             </button>
             <button
-              v-if="canTvBrowse"
               type="button"
-              class="rounded-md bg-card px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
-              @click="openTvPicker"
+              class="rounded-md bg-accent/15 px-3 py-1.5 text-sm font-medium text-accent transition hover:bg-accent/25"
+              @click="openPicker"
             >
-              {{ tvAllFiles ? '浏览本机目录…' : '授予「所有文件访问权限」' }}
+              浏览目录…
             </button>
             <span class="text-[length:var(--fs-mini)] text-ink-3">
-              {{
-                onDesktop || canTvBrowse
-                  ? '选完会自动填上面的地址；也可以手动粘路径'
-                  : '后端在容器/远端，这里要填它那台机器上的路径'
-              }}
+              选完自动填上面的地址；也可以手动填/粘贴路径
             </span>
           </div>
         </div>
@@ -603,8 +698,8 @@ onBeforeUnmount(() => {
       @click.self="closeTvPicker"
     >
       <div
-        class="flex w-full max-w-[36rem] flex-col overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl"
-        style="max-height: 74vh"
+        class="flex w-full max-w-[42rem] flex-col overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl"
+        style="max-height: 76vh"
       >
         <div class="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
           <button
@@ -616,7 +711,7 @@ onBeforeUnmount(() => {
             上一级
           </button>
           <div class="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-mini)] text-ink-3">
-            {{ pickerPath || '存储卷' }}
+            {{ pickerAbs || (pickerMode === 'tv' ? '存储卷' : '选择目录') }}
           </div>
           <button
             type="button"
@@ -626,27 +721,61 @@ onBeforeUnmount(() => {
             选中此目录
           </button>
         </div>
-        <div class="min-h-0 flex-1 overflow-y-auto p-2">
-          <button
-            v-for="d in pickerDirs"
-            :key="d.path"
-            type="button"
-            class="block min-h-9 w-full truncate rounded-md px-3 py-2 text-left text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
-            @click="enterDir(d.path)"
+        <div class="flex min-h-0 flex-1">
+          <!-- 左栏：本端真实可用的根（fnOS 授权目录 / 共享目录 / 挂载点 / 盘符）。
+               只有一个根时不必占地方，但**不能隐藏**——TV 上就是靠它换存储卷。 -->
+          <div
+            v-if="pickerRoots.length > 1"
+            class="w-28 shrink-0 overflow-y-auto border-r border-line p-1.5"
           >
-            📁 {{ d.name }}
-          </button>
-          <p v-if="!pickerDirs.length" class="px-3 py-6 text-center text-xs text-ink-3">
-            这个目录下没有子目录
-          </p>
+            <button
+              v-for="r in pickerRoots"
+              :key="r.id"
+              type="button"
+              class="block w-full truncate rounded-md px-2 py-1.5 text-left text-[length:var(--fs-mini)] transition"
+              :class="
+                r.id === pickerRootId
+                  ? 'bg-accent/20 text-accent'
+                  : 'text-ink-3 hover:bg-card-hover hover:text-ink'
+              "
+              :title="r.path"
+              @click="switchRoot(r.id)"
+            >
+              {{ r.label }}
+            </button>
+          </div>
+          <div class="min-h-0 flex-1 overflow-y-auto p-2">
+            <button
+              v-for="d in pickerDirs"
+              :key="d.path"
+              type="button"
+              class="block min-h-9 w-full truncate rounded-md px-3 py-2 text-left text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
+              @click="enterDir(d.path)"
+            >
+              📁 {{ d.name }}
+            </button>
+            <p v-if="pickerLoading" class="px-3 py-6 text-center text-xs text-ink-3">读取中…</p>
+            <p
+              v-else-if="!pickerDirs.length"
+              class="whitespace-pre-line px-3 py-6 text-center text-xs leading-relaxed text-ink-3"
+            >
+              {{ pickerHint || '这个目录下没有子目录' }}
+            </p>
+            <p
+              v-else-if="pickerHint"
+              class="px-3 pb-2 text-center text-[length:var(--fs-mini)] text-hot"
+            >
+              {{ pickerHint }}
+            </p>
+          </div>
         </div>
         <div class="flex shrink-0 items-center justify-between border-t border-line px-3 py-2">
-          <span class="text-[length:var(--fs-mini)] text-ink-3">
-            共 {{ pickerDirs.length }} 项 · 进入目标目录后点右上「选中此目录」
+          <span class="truncate text-[length:var(--fs-mini)] text-ink-3">
+            {{ pickerRoot ? pickerRoot.label + ' · ' : '' }}共 {{ pickerDirs.length }} 项 · 进入目标目录后点右上「选中此目录」
           </span>
           <button
             type="button"
-            class="rounded-md bg-field px-3 py-1 text-sm"
+            class="ml-2 shrink-0 rounded-md bg-field px-3 py-1 text-sm"
             @click="closeTvPicker"
           >
             取消

@@ -61,6 +61,10 @@ services:
       # 可选来源白名单，逗号分隔 CIDR。回环永远放行；不设 = 不限制。
       MEOW_ALLOW_CIDR: ${MEOW_ALLOW_CIDR-}
       MEOW_ALLOW_LOOPBACK_MEDIA: ${MEOW_ALLOW_LOOPBACK_MEDIA-}
+      # 片库「选择目录」弹窗能看到的根（冒号分隔）。不设 = 弹窗只提示未挂载，
+      # 避免用户去填 /volume1/... 这种宿主机路径然后永远读不到。
+      # 例：MEOW_LIBRARY_ROOTS=/media:/downloads（必须先 bind mount 进来）
+      MEOW_LIBRARY_ROOTS: ${MEOW_LIBRARY_ROOTS-}
       # 反代/容器里终结 TLS 时置 1：让密码登录与 Secure Cookie 生效。
       MEOW_PUBLIC_TLS: ${MEOW_PUBLIC_TLS-}
       # 本编排里 apiserver 默认只绑回环、唯一入口是 web 容器，所以默认 1：

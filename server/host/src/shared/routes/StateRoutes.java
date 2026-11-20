@@ -70,6 +70,19 @@ public final class StateRoutes {
      * 手改坏或断电写坏也不该让前端启动时整片 500——丢的只是进度，重建一条
      * 比报错划算。
      */
+    /**
+     * 状态文件的实际路径：按 fnOS uid 分命名空间。
+     *
+     * <p>网关用户 → {@code users/<uid>/state-progress.json}；没有网关身份
+     * （密码登录、设备令牌、本机回环）→ 原样返回文件名，继续用全局文件。
+     * 后半句是兼容性红线：Docker / PC / TV 的既有历史不能因为接入网关头而凭空消失。
+     *
+     * <p>uid 已在 {@code FnosIdentity.from} 校验成纯数字，拼接不会穿越目录。
+     */
+    static String f(HttpExchange ex, String name) {
+        return core.Auth.stateScope(ex) + name;
+    }
+
     public static JSONArray stateItems(String name) {
         String raw = core.DataPaths.read(name);
         if (raw == null || raw.trim().isEmpty()) return new JSONArray();
@@ -121,7 +134,7 @@ public final class StateRoutes {
             // 否则 ?site=&vodId= 这种拼错的 URL 会静默拿到 500 条。
             boolean anyKey = q.containsKey("site") || q.containsKey("vodId") || q.containsKey("vod_id");
             if (!anyKey) {
-                JSONArray sorted = stateTrim(stateItems(STATE_PROGRESS_FILE),
+                JSONArray sorted = stateTrim(stateItems(f(ex, STATE_PROGRESS_FILE)),
                         "ep_at", STATE_PROGRESS_PULL_MAX);
                 JSONArray items = new JSONArray();
                 for (int i = 0; i < sorted.length(); i++) items.put(progressOut(sorted.getJSONObject(i)));
@@ -132,7 +145,7 @@ public final class StateRoutes {
                 Api.sendJson(ex, 400, "{\"code\":-1,\"msg\":\"site and vodId required\"}");
                 return;
             }
-            JSONArray items = stateItems(STATE_PROGRESS_FILE);
+            JSONArray items = stateItems(f(ex, STATE_PROGRESS_FILE));
             int idx = stateIndexOf(items, site, vodId);
             Api.sendJson(ex, 200, new JSONObject().put("ok", true)
                     .put("item", idx < 0 ? JSONObject.NULL : progressOut(items.getJSONObject(idx)))
@@ -185,7 +198,7 @@ public final class StateRoutes {
         boolean merged;
         boolean wrote = true;
         synchronized (STATE_LOCK) {
-            JSONArray items = stateItems(STATE_PROGRESS_FILE);
+            JSONArray items = stateItems(f(ex, STATE_PROGRESS_FILE));
             int idx = stateIndexOf(items, site, vodId);
             JSONObject prev = idx < 0 ? null : items.optJSONObject(idx);
             long prevAt = prev == null ? 0 : stateLong(prev, "ep_at", 0);
@@ -209,7 +222,7 @@ public final class StateRoutes {
                 }
                 if (idx < 0) items.put(rec);
                 else items.put(idx, rec);       // put(idx,..) 是替换，不会新增一条
-                wrote = stateWrite(STATE_PROGRESS_FILE,
+                wrote = stateWrite(f(ex, STATE_PROGRESS_FILE),
                         stateTrim(items, "ep_at", STATE_PROGRESS_MAX));
             }
         }
@@ -227,7 +240,7 @@ public final class StateRoutes {
     public static void handleStateFavorites(HttpExchange ex) throws Exception {
         String method = ex.getRequestMethod();
         if ("GET".equalsIgnoreCase(method)) {
-            JSONArray sorted = stateTrim(stateItems(STATE_FAVORITES_FILE),
+            JSONArray sorted = stateTrim(stateItems(f(ex, STATE_FAVORITES_FILE)),
                     "at", STATE_FAVORITES_MAX);
             JSONArray items = new JSONArray();
             for (int i = 0; i < sorted.length(); i++) items.put(favoriteOut(sorted.getJSONObject(i)));
@@ -269,7 +282,7 @@ public final class StateRoutes {
         int count;
         boolean wrote = true;
         synchronized (STATE_LOCK) {
-            JSONArray items = stateItems(STATE_FAVORITES_FILE);
+            JSONArray items = stateItems(f(ex, STATE_FAVORITES_FILE));
             int idx = stateIndexOf(items, site, vodId);
             if (delete) {
                 // 不存在也回 ok：DELETE 必须幂等，否则前端重试/重复点击会看到假错误
@@ -278,7 +291,7 @@ public final class StateRoutes {
                 // 造出一个空文件，还会白占一次固定名 .tmp。
                 if (idx >= 0) {
                     items.remove(idx);
-                    wrote = stateWrite(STATE_FAVORITES_FILE, items);
+                    wrote = stateWrite(f(ex, STATE_FAVORITES_FILE), items);
                 }
                 count = items.length();
             } else {
@@ -297,7 +310,7 @@ public final class StateRoutes {
                 else items.put(idx, rec);
                 items = stateTrim(items, "at", STATE_FAVORITES_MAX);
                 count = items.length();
-                wrote = stateWrite(STATE_FAVORITES_FILE, items);
+                wrote = stateWrite(f(ex, STATE_FAVORITES_FILE), items);
             }
         }
         if (!wrote) {
@@ -310,7 +323,7 @@ public final class StateRoutes {
         String method = ex.getRequestMethod();
 
         if ("GET".equalsIgnoreCase(method)) {
-            JSONObject stored = statePrefsRead();
+            JSONObject stored = statePrefsRead(f(ex, STATE_PREFS_FILE));
             Api.sendJson(ex, 200, new JSONObject()
                     .put("ok", true)
                     .put("prefs", stored.optJSONObject("prefs") == null ? new JSONObject() : stored.optJSONObject("prefs"))
@@ -344,7 +357,7 @@ public final class StateRoutes {
         JSONObject stored;
         long at = System.currentTimeMillis();
         synchronized (STATE_LOCK) {
-            stored = statePrefsRead();
+            stored = statePrefsRead(f(ex, STATE_PREFS_FILE));
             JSONObject merged = stored.optJSONObject("prefs");
             if (merged == null) merged = new JSONObject();
             int applied = 0;
@@ -369,7 +382,7 @@ public final class StateRoutes {
                 return;
             }
             JSONObject out = new JSONObject().put("prefs", merged).put("at", at);
-            if (!core.DataPaths.write(STATE_PREFS_FILE, out.toString(2))) {
+            if (!core.DataPaths.write(f(ex, STATE_PREFS_FILE), out.toString(2))) {
                 Api.sendJson(ex, 500, "{\"code\":-1,\"msg\":\"cannot write " + STATE_PREFS_FILE + "\"}");
                 return;
             }
@@ -421,13 +434,13 @@ public final class StateRoutes {
         putIfNotEmpty(o, "flag", stateStr(it, "flag"));
         return o;
     }
-    public static JSONObject statePrefsRead() {
-        String raw = core.DataPaths.read(routes.StateRoutes.STATE_PREFS_FILE);
+    public static JSONObject statePrefsRead(String path) {
+        String raw = core.DataPaths.read(path);
         if (raw == null || raw.trim().isEmpty()) return new JSONObject();
         try {
             return new JSONObject(raw);
         } catch (Exception e) {
-            System.out.println("[state] " + routes.StateRoutes.STATE_PREFS_FILE + " unreadable, treated as empty: " + e.getMessage());
+            System.out.println("[state] " + path + " unreadable, treated as empty: " + e.getMessage());
             return new JSONObject();
         }
     }

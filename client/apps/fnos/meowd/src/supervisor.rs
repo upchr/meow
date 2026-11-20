@@ -214,6 +214,20 @@ fn spawn_api(cfg: &Config, java: &Path) -> anyhow::Result<Child> {
         .arg(format!("--data-dir={}", cfg.data_dir.display()))
         .env("MEOW_BIND", &cfg.api_bind)
         .env("MEOW_INSTANCE_ID", format!("meow@{}", cfg.pkg_var.display()))
+        /*
+         * fnOS 的授权目录只注入到 meowd 这一层，Java 子进程默认读不到。
+         * 用户在「应用设置 → 访问权限」里勾的文件夹走 TRIM_DATA_ACCESSIBLE_PATHS，
+         * data-share 共享目录走 TRIM_DATA_SHARE_PATHS（都是冒号分隔）。
+         * 两个都不传 = 后端只会看到空列表，片库弹窗永远"没有可用目录"。
+         */
+        .env(
+            "MEOW_ALLOWED_PATHS",
+            std::env::var("TRIM_DATA_ACCESSIBLE_PATHS").unwrap_or_default(),
+        )
+        .env(
+            "MEOW_SHARE_PATHS",
+            std::env::var("TRIM_DATA_SHARE_PATHS").unwrap_or_default(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));

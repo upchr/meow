@@ -128,17 +128,49 @@ public final class Auth {
         public static Result no(String reason) {
             return new Result(false, "", "", reason);
         }
+
+        /**
+         * 网关身份首请求的通过结果。
+         *
+         * <p>为什么需要单独造一个：这一次请求的 Cookie 是刚写进**响应头**的，
+         * 请求头上还没有，`authenticate()` 重跑一遍仍然是 no_credentials。
+         */
+        public static Result fnosOk() {
+            return new Result(true, "full", "fnos");
+        }
     }
 
     private static final class Session {
         final int epoch;
         final long exp;
+        /** fnOS uid（网关免密会话才有）；密码登录的会话是空串 */
+        final String fnosUid;
+        /** 显示名（安全事件/审计用） */
+        final String user;
+        /** 能否改策略/片库/导入源；fnOS 非管理员为 false */
+        final boolean admin;
 
         Session(int epoch, long exp) {
+            this(epoch, exp, "", "", true);
+        }
+
+        Session(int epoch, long exp, String fnosUid, String user, boolean admin) {
             this.epoch = epoch;
             this.exp = exp;
+            this.fnosUid = fnosUid == null ? "" : fnosUid;
+            this.user = user == null ? "" : user;
+            this.admin = admin;
         }
     }
+
+    /**
+     * fnOS uid → 当前会话 sid。
+     *
+     * <p>为什么需要它：网关场景下浏览器每次"首次无 Cookie 请求"都会走到
+     * 免密建会话那条路，不做复用就会给同一个用户反复建会话，把
+     * {@code MAX_SESSIONS=32} 挤爆、顺手把别人的会话踢掉。
+     */
+    private static final Map<String, String> FNOS_SESSIONS = new ConcurrentHashMap<>();
 
     private static final class Ticket {
         final String kind;
@@ -514,10 +546,21 @@ public final class Auth {
      */
 
     public static String createSession() {
+        return createSessionFor("", "", true);
+    }
+
+    /**
+     * 建会话并登记所有者。
+     *
+     * @param fnosUid fnOS 网关身份（密码登录传空串）
+     * @param user    显示名（安全事件/审计用）
+     * @param admin   能否改策略/片库/导入源
+     */
+    public static String createSessionFor(String fnosUid, String user, boolean admin) {
         cleanupSessions();
         String sid = randomToken(32);
         SESSIONS.put(sha256(sid), new Session(st().optInt("sessionEpoch", 1),
-                System.currentTimeMillis() + SESSION_TTL_MS));
+                System.currentTimeMillis() + SESSION_TTL_MS, fnosUid, user, admin));
         if (SESSIONS.size() > MAX_SESSIONS) {
             // 踢最旧：按 exp 排序
             List<Map.Entry<String, Session>> list = new ArrayList<>(SESSIONS.entrySet());
@@ -528,6 +571,83 @@ public final class Auth {
         }
         saveSessions();
         return sid;
+    }
+
+    /**
+     * 网关免密：取得（或新建）该 fnOS uid 对应的会话 sid。
+     *
+     * <p>复用同一个 sid 而不是每次请求新建 —— 否则 {MAX_SESSIONS} 会被同一
+     * 用户的并发首请求挤爆，把别人的会话踢下线。
+     *
+     * <p>复用前会同步 fnOS 侧的最新属性（管理员可能被降权、用户名可能改过），
+     * 所以每次请求都以后者为准。
+     */
+    public static String sessionForFnos(FnosIdentity.Who who) {
+        if (who == null) return null;
+        String sid = FNOS_SESSIONS.get(who.uid);
+        if (sid != null) {
+            Session s = SESSIONS.get(sha256(sid));
+            if (s != null && s.exp >= System.currentTimeMillis()
+                    && s.epoch == st().optInt("sessionEpoch", 1)) {
+                if (s.admin != who.admin || !s.user.equals(who.name)) {
+                    SESSIONS.put(sha256(sid), new Session(s.epoch, s.exp, who.uid, who.name, who.admin));
+                    saveSessions();
+                }
+                return sid;
+            }
+            FNOS_SESSIONS.remove(who.uid);
+        }
+        String fresh = createSessionFor(who.uid, who.name, who.admin);
+        FNOS_SESSIONS.put(who.uid, fresh);
+        return fresh;
+    }
+
+    /**
+     * 当前请求的会话是否管理员。
+     *
+     * <p>没有会话（设备令牌 / 未开鉴权）时返回 true：设备令牌的 full scope
+     * 本来就是管理员级，未开鉴权时也没有"谁来改"的概念。
+     */
+    public static boolean isAdminContext(HttpExchange ex) {
+        String sid = sessionId(ex);
+        if (sid == null) {
+            /*
+             * 网关首请求：这一次的会话 Cookie 是刚写进响应头的，请求头上还没有。
+             * 不在这里按网关头判的话，普通用户第一次 POST 就能改策略
+             * （验收项明确要求 X-Trim-Isadmin=false → 403）。
+             */
+            FnosIdentity.Who who = FnosIdentity.from(ex);
+            if (who != null) return who.admin;
+            return true;
+        }
+        Session s = SESSIONS.get(sha256(sid));
+        return s == null || s.admin;
+    }
+
+    /** 当前请求的显示名：fnOS 会话用网关用户名，其余用管理员名。 */
+    public static String currentUser(HttpExchange ex) {
+        String sid = sessionId(ex);
+        if (sid != null) {
+            Session s = SESSIONS.get(sha256(sid));
+            if (s != null && !s.user.isEmpty()) return s.user;
+        }
+        FnosIdentity.Who who = FnosIdentity.from(ex);
+        if (who != null) return who.name;
+        return username();
+    }
+
+    /**
+     * 状态落盘的命名空间前缀（**带结尾斜杠**）。
+     *
+     * <p>网关用户按 fnOS uid 分：{@code users/<uid>/}。没有网关身份（密码登录、
+     * 设备令牌、本机回环）返回空串，仍读写全局文件 —— 这样 Docker / PC / TV
+     * 的既有数据不会因为接入网关头集体"消失"。
+     *
+     * <p>uid 已在 {@link FnosIdentity#from} 里校验成纯数字，拼路径不会穿越。
+     */
+    public static String stateScope(HttpExchange ex) {
+        FnosIdentity.Who who = FnosIdentity.from(ex);
+        return who == null ? "" : "users/" + who.uid + "/";
     }
 
     public static void destroySession(String sid) {
@@ -545,6 +665,13 @@ public final class Auth {
                 o.put("h", e.getKey());
                 o.put("epoch", e.getValue().epoch);
                 o.put("exp", e.getValue().exp);
+                // 网关会话的身份必须一起落盘：只存 sid 哈希会让重启后的会话
+                // 变成"无主"，再按 admin 默认值处理就等于给普通用户提权。
+                if (!e.getValue().fnosUid.isEmpty()) {
+                    o.put("uid", e.getValue().fnosUid);
+                    o.put("user", e.getValue().user);
+                    o.put("admin", e.getValue().admin);
+                }
                 arr.put(o);
             }
             synchronized (LOCK) {
@@ -571,7 +698,9 @@ public final class Auth {
                 String h = o.optString("h", "");
                 if (h.isEmpty() || exp < now) continue;
                 if (o.optInt("epoch", 1) != epoch) continue; // 改过密码 → 全失效
-                keep.add(new Session(epoch, exp));
+                // 老数据没有 uid/user/admin：就是密码登录的会话，保持管理员
+                keep.add(new Session(epoch, exp, o.optString("uid", ""),
+                        o.optString("user", ""), o.optBoolean("admin", true)));
                 SESSIONS.put(h, keep.get(keep.size() - 1));
             }
             if (SESSIONS.size() > MAX_SESSIONS) {

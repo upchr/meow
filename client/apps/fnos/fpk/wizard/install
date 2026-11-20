@@ -8,7 +8,7 @@
       },
       {
         "type": "tips",
-        "helpText": "端口：30010 为网页/桌面入口，需要局域网可访问（TV 与手机靠它自动发现）；30011 为后端 API，只监听 127.0.0.1，不对局域网开放。"
+        "helpText": "端口：30010 为网页入口，默认只监听本机（从飞牛桌面图标 / 网关访问）。要让 TV、手机在局域网直连，需在 etc/meow.conf 设 MEOW_SHELL_BIND=0.0.0.0 并开启鉴权（MEOW_AUTH_MODE=on）；30011 为后端 API，只监听 127.0.0.1。"
       },
       {
         "type": "tips",
@@ -32,7 +32,7 @@
         "field": "wizard_port",
         "label": "Web 入口端口",
         "initValue": "30010",
-        "helpText": "桌面与网页入口端口，局域网需可访问。",
+        "helpText": "桌面与网页入口端口。默认只监听本机；要让局域网设备直连需改 etc/meow.conf 的 MEOW_SHELL_BIND。",
         "rules": [
           { "required": true, "message": "请填写端口" },
           { "pattern": "^[0-9]+$", "message": "只能填数字" },

@@ -68,6 +68,83 @@ export function fetchLibraryDir(lib: string, path: string): Promise<LibraryList>
   return req<LibraryList>(`/api/library?${q}`)
 }
 
+// ------------------------------------------------- 目录树（「选择目录」弹窗）
+//
+// 与 fetchLibraryDir 的区别：那条要求 lib 已保存，而添加弹框在保存前没有 lib。
+// 这组端点只认"本端真实有权限的根"，与片库配置无关。
+
+/** 可浏览的根；source = share（应用共享）/ authorized（fnOS 授权）/ mount（挂载）/ drive（盘符）。 */
+export interface LibraryRoot {
+  id: string
+  label: string
+  path: string
+  source: string
+  readOnly?: boolean
+  canBrowse?: boolean
+}
+
+export interface LibraryRootsResult {
+  ok: boolean
+  roots: LibraryRoot[]
+}
+
+export interface LibraryDirEntry {
+  name: string
+  mtime?: number
+  /** 子目录是否可读；false 时前端显示一行灰字原因，不静默隐藏 */
+  readable?: boolean
+}
+
+export interface LibraryLsResult {
+  ok: boolean
+  dirs: LibraryDirEntry[]
+  files: LibraryDirEntry[]
+  truncated?: boolean
+}
+
+export interface LibraryCapabilities {
+  ok: boolean
+  canBrowse: boolean
+  canNativePicker: boolean
+  canTvBridge: boolean
+  roots: number
+  hints: { localPathNote?: string }
+}
+
+/**
+ * 带错误正文的 GET：`action=ls` 的 400 里有人话 msg（"path escapes root" 之类），
+ * 丢掉它前端就只能显示 "HTTP 400"。
+ */
+async function reqMsg<T>(path: string): Promise<T> {
+  const r = await fetch(`${apiBase()}${path}`)
+  const text = await r.text()
+  let parsed: unknown = null
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    /* 非 JSON（网关错误页）→ 用状态码 */
+  }
+  if (!r.ok) {
+    const m = (parsed as { msg?: string } | null)?.msg
+    throw new Error(m || `HTTP ${r.status}`)
+  }
+  return parsed as T
+}
+
+export function fetchLibraryRoots(): Promise<LibraryRootsResult> {
+  return reqMsg<LibraryRootsResult>('/api/library?action=roots')
+}
+
+/** 列根下的一层目录。path 是相对根的路径（空 = 根本身）。 */
+export function listLibraryRoot(root: string, path: string): Promise<LibraryLsResult> {
+  const q = new URLSearchParams({ action: 'ls', root, path })
+  return reqMsg<LibraryLsResult>(`/api/library?${q}`)
+}
+
+export function fetchLibraryCapabilities(): Promise<LibraryCapabilities> {
+  return reqMsg<LibraryCapabilities>('/api/library?action=capabilities')
+}
+
 /** 保存整个库列表（后端按 id 覆盖写）。 */
 export async function saveLibrary(libs: Partial<LibraryInfo>[]): Promise<boolean> {
   const r = await fetch(`${apiBase()}/api/library`, {

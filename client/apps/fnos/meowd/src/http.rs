@@ -156,7 +156,10 @@ pub const GATEWAY_PREFIX: &str = "/app/meow";
 pub fn build_gateway_router(state: AppState) -> Router {
     // ★ 用 app_routes 而不是 build_router：后者带"根路径 307 到 /app/meow/"，
     //   而网关收到的是**已剥前缀**的路径，"/" 再跳回前缀会 302 死循环。
-    let inner = app_routes(state).layer(middleware::from_fn(set_forwarded_prefix));
+    let inner = app_routes(state)
+        .layer(middleware::from_fn(set_forwarded_prefix))
+        // 网关侧唯一可信来源：保留 X-Trim-*，打上 fnos-gateway 标记
+        .layer(middleware::from_fn(mark_gateway_ingress));
     let nested = format!("{GATEWAY_PREFIX}/");
     Router::new()
         // iframe 入口 url 不带尾斜杠（与 FnDepot 一致），统一 301 过去
@@ -199,6 +202,23 @@ async fn set_forwarded_prefix(mut req: Request<Body>, next: Next) -> Response {
 /// IP 只能指望网关照实转发；实测 fnOS micro_app 网关连客户端自带的 XFF 都会
 /// 清洗掉，所以网关形态下后端只能看到 127.0.0.1（文档已列为此形态的已知限制）。
 async fn set_peer_addr(mut req: Request<Body>, next: Next) -> Response {
+    /*
+     * ★ 直连入口必须先把 fnOS 身份头删干净再往下走。
+     *
+     * 客户端可以自带 `X-Trim-Userid: 1000` / `X-Trim-Isadmin: true`，而
+     * `proxy::forward` 会原样透传所有非逐跳头 —— 不删的话，任何能连到
+     * 30010 的人都能冒充 fnOS 管理员。Java 侧只认 ingress + uid 的组合，
+     * 这里的 ingress=tcp 与删头是同一道闸的两半（缺一不可）。
+     */
+    for name in ["x-trim-userid", "x-trim-username", "x-trim-isadmin"] {
+        req.headers_mut().remove(name);
+    }
+    // 覆盖而不是 append：客户端自带的 x-meow-ingress 一律作废
+    req.headers_mut().insert(
+        HeaderName::from_static("x-meow-ingress"),
+        HeaderValue::from_static("tcp"),
+    );
+
     let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0);
     if let Some(addr) = peer {
         if let Ok(value) = HeaderValue::from_str(&addr.ip().to_string()) {
@@ -211,6 +231,20 @@ async fn set_peer_addr(mut req: Request<Body>, next: Next) -> Response {
             HeaderValue::from_static("http"),
         );
     }
+    next.run(req).await
+}
+
+/// 网关入口（unix socket）：fnOS 已经验过身份，保留 `X-Trim-*` 并标记来源。
+///
+/// <p>与 `set_peer_addr` 是一对：TCP 删头 + `tcp`，socket 保头 + `fnos-gateway`。
+/// Java 只认「`X-Meow-Ingress: fnos-gateway` 且带 `X-Trim-Userid`」的组合，
+/// 所以哪怕有人能连上 socket 伪造头，也至少要过「能连 socket」这一关
+/// （socket 权限由 fpk 安装目录决定，见文档 §4.1 的已知前提）。
+async fn mark_gateway_ingress(mut req: Request<Body>, next: Next) -> Response {
+    req.headers_mut().insert(
+        HeaderName::from_static("x-meow-ingress"),
+        HeaderValue::from_static("fnos-gateway"),
+    );
     next.run(req).await
 }
 

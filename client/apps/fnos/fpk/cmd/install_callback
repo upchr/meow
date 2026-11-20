@@ -8,6 +8,20 @@ mkdir -p "$TRIM_PKGVAR/logs" 2>/dev/null
 "$(dirname "$0")/icon_setup" >/dev/null 2>&1
 # 日志对用户可见：@appshare/<app> 是 root 000，只有这里（root）能建目录开权限
 "$(dirname "$0")/log_share_setup" >/dev/null 2>&1
+
+# ── 片库默认位置（wizard_library_mode）────────────────────────────────────
+# 向导默认 share = 直接用应用共享目录 meow/library 建一个本地库。
+# ★ 之前这个选项是死的：向导收集了、没有任何代码消费，用户装完还得自己建库，
+#   而默认值写着 share —— 等于承诺了没做到。
+# 只在该文件不存在时写：重装/升级读已有配置，不能覆盖用户自己加的库。
+LIB="$TRIM_PKGVAR/data/library.json"
+SHARE="${TRIM_DATA_SHARE_PATHS%%:*}"
+if [ "${wizard_library_mode:-share}" = "share" ] && [ -n "$SHARE" ] && [ ! -f "$LIB" ]; then
+    printf '{"libs":[{"id":"share","name":"共享目录","type":"local","base":"%s/","root":"","domain":""}]}' \
+        "$SHARE" > "$LIB" 2>/dev/null
+    chown meow:meow "$LIB" 2>/dev/null
+    echo "  library: created share lib at $SHARE" >> "$TRIM_PKGVAR/logs/install.log" 2>/dev/null
+fi
 {
     echo "[install_callback] $(date '+%F %T') ver=$TRIM_APPVER"
     echo "  APPDEST=$TRIM_APPDEST"

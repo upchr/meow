@@ -54,6 +54,7 @@ const devSidebar = [
       { text: '投屏', link: '/dev/casting' },
       { text: '弹幕', link: '/dev/danmaku' },
       { text: '片库与离线缓存', link: '/dev/library-cache' },
+      { text: '本地目录片库与目录树', link: '/dev/library-local-browse' },
       { text: '直播', link: '/dev/live' },
       { text: 'AI 助手', link: '/dev/ai-assistant' },
     ],
@@ -77,6 +78,7 @@ const devSidebar = [
     text: '运维',
     items: [
       { text: '数据与状态', link: '/dev/data-state' },
+      { text: 'fnOS 网关身份接入', link: '/dev/fnos-gateway-auth' },
       { text: 'Docker 部署', link: '/dev/docker' },
       { text: '公网部署与访问控制', link: '/dev/public-deployment' },
       { text: '构建与发版', link: '/dev/build-release' },

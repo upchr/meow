@@ -39,6 +39,19 @@ public final class LibraryRoutes {
     }
 
     /**
+     * 目录列举的隔离线程池：守护线程 + 可取消。
+     *
+     * <p>用独立池而不是公共池：远程挂载卡住时只废掉这个线程，不拖累其它请求；
+     * 守护线程保证 JVM 退出不被它挂住。
+     */
+    private static final java.util.concurrent.ExecutorService LS_POOL =
+            java.util.concurrent.Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "lib-ls");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /**
      * 片库专用的 HTTP 客户端（WebDAV 的 PROPFIND / GET）。
      *
      * <p>单独一份而不是复用全局的：片库请求要发 PROPFIND 这种非标准方法，
@@ -194,9 +207,45 @@ public final class LibraryRoutes {
                 }
                 return;
             }
-            boolean saved = core.Library.saveConfig(body);
-            Api.sendJson(ex, saved ? 200 : 500,
-                    new JSONObject().put("ok", saved).toString());
+            // 结构化结果：DUP_ROOT 这类是「用户输入问题」→ 400；写盘失败 → 500
+            JSONObject r = core.Library.saveConfigEx(body);
+            int status = r.optBoolean("ok", false) ? 200 : (r.has("code") ? 400 : 500);
+            Api.sendJson(ex, status, r.toString());
+            return;
+        }
+
+        /*
+         * 目录树三端点（2026-11-20）。必须在 lib 分支**之前**判：
+         * 放到后面会被"没指定库 → 返回配置"吃掉，弹窗永远只能拿到 libs。
+         */
+        String action = Api.trimToEmpty(q.get("action")).toLowerCase();
+        if ("roots".equals(action)) {
+            Api.sendJson(ex, 200, new JSONObject().put("ok", true)
+                    .put("roots", core.LibraryRoots.all()).toString());
+            return;
+        }
+        if ("capabilities".equals(action)) {
+            Api.sendJson(ex, 200, core.LibraryRoots.capabilities().toString());
+            return;
+        }
+        if ("ls".equals(action)) {
+            String rootId = Api.trimToEmpty(q.get("root"));
+            String rel = Api.trimToEmpty(q.get("path"));
+            boolean withFiles = "1".equals(q.get("includeFiles"));
+            if (rootId.isEmpty()) {
+                Api.sendJson(ex, 400, "{\"code\":-1,\"msg\":\"root required\"}");
+                return;
+            }
+            try {
+                Api.sendJson(ex, 200, lsWithTimeout(rootId, rel, withFiles).toString());
+            } catch (IllegalArgumentException e) {
+                // 未知 root / 路径穿越 / 不可读：一律 400，不把异常栈甩给前端
+                Api.sendJson(ex, 400, new JSONObject().put("code", -1)
+                        .put("msg", String.valueOf(e.getMessage())).toString());
+            } catch (Exception e) {
+                Api.sendJson(ex, 500, new JSONObject().put("code", -1)
+                        .put("msg", String.valueOf(e.getMessage())).toString());
+            }
             return;
         }
 
@@ -253,6 +302,29 @@ public final class LibraryRoutes {
      * <p>Range 必须原样转发：实测 NAS 对 10.6GB 的 mp4 返回 206 + 精确字节数，
      * 不转发 Range 会让 4K 单集（1.4–2GB）每次从头下载，拖动进度条直接失效。
      */
+    /**
+     * 目录列举加 3 秒上限。
+     *
+     * <p>授权路径可能是 rclone / 网盘挂载，卡住时 {@code File.listFiles()} 会一直阻塞；
+     * 不设上限就把请求线程一起挂死，用户在弹窗里看到的是"永远转圈"。
+     * 超时回一句人话，比无限等待有用。
+     */
+    private static JSONObject lsWithTimeout(String rootId, String rel, boolean withFiles)
+            throws Exception {
+        java.util.concurrent.Future<JSONObject> f = LS_POOL.submit(
+                () -> core.LibraryRoots.ls(rootId, rel, withFiles));
+        try {
+            return f.get(3000, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            f.cancel(true);
+            throw new IllegalArgumentException("目录读取超时（网络盘/远程挂载可能较慢）");
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable c = e.getCause();
+            if (c instanceof IllegalArgumentException) throw (IllegalArgumentException) c;
+            throw new Exception(c == null ? e : c);
+        }
+    }
+
     public static void handleLibraryStream(HttpExchange ex) throws IOException {
         Map<String, String> q = Api.query(ex);
         String libId = Api.trimToEmpty(q.get("lib"));

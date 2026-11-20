@@ -75,6 +75,23 @@ public final class Library {
     }
 
     public static boolean saveConfig(String body) throws Exception {
+        return saveConfigEx(body).optBoolean("ok", false);
+    }
+
+    /**
+     * 保存配置并返回**结构化结果**（前端要能说出"为什么没保存"）。
+     *
+     * <p>去重规则（2026-11-20）：
+     * <ul>
+     *   <li>同一 type + 同一归一化根（本地目录走 {@code toRealPath}，Windows 转小写）
+     *       → 拒绝，返回 {@code code=DUP_ROOT} 并指名冲突库；</li>
+     *   <li>一方的根是另一方的祖先/子孙 → 允许，但回 {@code warn}（会重复扫描）；</li>
+     * </ul>
+     *
+     * <p>为什么必须做：同一个目录加两次等于两个库扫同一批文件，首页出现重复条目、
+     * 刮削任务翻倍，而用户看不出问题出在自己加了两遍。
+     */
+    public static JSONObject saveConfigEx(String body) throws Exception {
         JSONObject in = body == null || body.trim().isEmpty() ? new JSONObject() : new JSONObject(body);
         if (in.optJSONArray("libs") == null) in.put("libs", new JSONArray());
         // 旧配置里每个 id 的密码。整表提交时前端拿不到明文（publicConfig 只给
@@ -113,7 +130,80 @@ public final class Library {
             else o.put("domain", "");
             clean.put(o);
         }
-        return DataPaths.write(CONFIG_FILE, new JSONObject().put("libs", clean).toString());
+        // ---- 根去重（2026-11-20）：精确重复拒绝，父子重叠只警告 ----
+        String warn = "";
+        for (int i = 0; i < clean.length(); i++) {
+            JSONObject a = clean.getJSONObject(i);
+            String ka = dupKey(a);
+            for (int j = 0; j < i; j++) {
+                JSONObject b = clean.getJSONObject(j);
+                String kb = dupKey(b);
+                if (!ka.isEmpty() && ka.equals(kb)) {
+                    return new JSONObject().put("ok", false).put("code", "DUP_ROOT")
+                            .put("msg", "已在库「" + b.optString("name", b.optString("id")) + "」中");
+                }
+                if (warn.isEmpty() && overlaps(a, b)) {
+                    warn = "与「" + b.optString("name", b.optString("id")) + "」重叠，会重复扫描";
+                }
+            }
+        }
+
+        boolean wrote = DataPaths.write(CONFIG_FILE, new JSONObject().put("libs", clean).toString());
+        JSONObject out = new JSONObject().put("ok", wrote);
+        if (!warn.isEmpty()) out.put("warn", warn);
+        return out;
+    }
+
+    /**
+     * 去重比较键：{@code type|归一化 base|root}。
+     *
+     * <p>本地路径必须走真实路径归一化（`/media/a` 与 `/media/a/` 与
+     * `/media/../media/a` 是同一个目录）；Windows 还要转小写，否则同一目录
+     * 只因大小写不同就能加两次。
+     */
+    private static String dupKey(JSONObject lib) {
+        String type = lib.optString("type", "").toLowerCase();
+        String base = canonical(lib.optString("base", ""));
+        if (base.isEmpty()) return "";
+        return type + "|" + base + "|" + lib.optString("root", "");
+    }
+
+    /** 归一化：本地路径取 realpath（不存在则父目录 realpath + 文件名），URL 转小写去尾斜杠。 */
+    private static String canonical(String raw) {
+        String s = raw == null ? "" : raw.trim();
+        if (s.isEmpty()) return "";
+        boolean local = s.startsWith("/") || s.matches("^[A-Za-z]:[\\\\/].*");
+        if (!local) {
+            return s.toLowerCase().replaceAll("/+$", "");
+        }
+        try {
+            java.nio.file.Path p = java.nio.file.Paths.get(s);
+            String real;
+            try {
+                real = p.toRealPath().toString();
+            } catch (Exception notFound) {
+                // 目录还不存在（用户先建库后建目录）：父目录一定存在，拿它兜底
+                java.nio.file.Path parent = p.getParent();
+                String pz = parent == null ? s : parent.toRealPath().toString();
+                java.nio.file.Path name = p.getFileName();
+                real = name == null ? pz : java.nio.file.Paths.get(pz).resolve(name).toString();
+            }
+            if (java.io.File.separatorChar == '\\') real = real.toLowerCase();
+            return real.replaceAll("[/\\\\]+$", "");
+        } catch (Throwable t) {
+            return s.replaceAll("[/\\\\]+$", "");
+        }
+    }
+
+    /** 本地路径的祖先/子孙关系；URL 不做重叠判断（共享名不同就是不同库）。 */
+    private static boolean overlaps(JSONObject a, JSONObject b) {
+        String ba = canonical(a.optString("base", ""));
+        String bb = canonical(b.optString("base", ""));
+        boolean local = ba.startsWith("/") || ba.matches("^[a-z]:[\\\\/].*");
+        if (!local || bb.isEmpty()) return false;
+        if (!a.optString("type", "").equalsIgnoreCase(b.optString("type", ""))) return false;
+        String sep = String.valueOf(java.io.File.separatorChar);
+        return ba.startsWith(bb + sep) || bb.startsWith(ba + sep);
     }
 
     /** 对外输出时抹掉密码。 */
