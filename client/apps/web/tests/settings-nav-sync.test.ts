@@ -184,7 +184,10 @@ describe('片库页层级与面包屑', () => {
   })
 
   it('片库与缓存是两个页签，不是上下堆叠', () => {
-    expect(LIB_VIEW).toContain("label: '本地片库'")
+    // 片库页签的文案是动态的：后端在本机叫「本地片库」，连远程后端叫「服务器片库」
+    // （base 是后端那台机器上的路径，写死"本地"会让 TV/PC 用户以为是自己设备）
+    expect(LIB_VIEW).toContain("label: libTabLabel")
+    expect(LIB_VIEW).toContain("backendIsLocal() ? '本地片库' : '服务器片库'")
     expect(LIB_VIEW).toContain("label: '我的缓存'")
     // CachePanel 必须受 tab 控制（v-if），不能无条件渲染
     expect(LIB_VIEW).toMatch(/<CachePanel v-if="tab === 'cache'"/)

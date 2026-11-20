@@ -370,6 +370,11 @@ describe('fnOS 网关身份与本地片库目录树（2026-11-20）', () => {
 })
 
 describe('片库「选择目录」的语义与 TV 焦点（2026-11-20）', () => {
+  it('「本地 / 服务器」文案跟着后端位置走（页签与类型卡）', () => {
+    expect(src('views/LibraryView.vue')).toContain("backendIsLocal() ? '本地片库' : '服务器片库'")
+    expect(src('components/library/LibraryAddDialog.vue')).toContain("'服务器目录'")
+  })
+
   it('本地选择器只在本机后端时出现（远程后端读不到本机路径）', () => {
     const dlg = src('components/library/LibraryAddDialog.vue')
     expect(dlg).toContain('backendIsLocal')

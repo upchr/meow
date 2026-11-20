@@ -16,7 +16,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { apiBase } from '@/api'
+import { apiBase, backendIsLocal } from '@/api'
 import CachePanel from '@/components/library/CachePanel.vue'
 import LibraryAddDialog from '@/components/library/LibraryAddDialog.vue'
 import PosterImage from '@/components/common/PosterImage.vue'
@@ -65,6 +65,14 @@ const router = useRouter()
 
 /** 页签：片库 / 缓存。缓存原先是本页下方的一块，把片库挤到屏幕外 */
 type Tab = 'lib' | 'cache'
+/**
+ * 片库页签的文案。
+ *
+ * <p>片库的 base 是**后端那台机器**上的路径；TV/PC 连远程后端时，"本地片库"
+ * 会让用户以为是自己手里这台设备的目录（实测就是这么误会的）。后端不在
+ * 本机就叫「服务器片库」，语义与"这条路径在后端上"一致。
+ */
+const libTabLabel = backendIsLocal() ? '本地片库' : '服务器片库'
 const tab = ref<Tab>('lib')
 
 const loading = ref(true)
@@ -1158,7 +1166,7 @@ onBeforeUnmount(() => {
     <div class="flex items-center gap-1.5">
       <button
         v-for="t in [
-          { id: 'lib', label: '本地片库' },
+          { id: 'lib', label: libTabLabel },
           { id: 'cache', label: '我的缓存' },
         ]"
         :key="t.id"
@@ -1190,7 +1198,7 @@ onBeforeUnmount(() => {
             返回
           </button>
           <h1 class="truncate text-lg font-medium">
-            {{ activeGroup ? activeGroup.title : '本地片库' }}
+            {{ activeGroup ? activeGroup.title : libTabLabel }}
             <span v-if="trail.length && !activeGroup" class="ml-2 text-sm text-ink-3">
               / {{ trail.map((t) => t.name).join(' / ') }}
             </span>

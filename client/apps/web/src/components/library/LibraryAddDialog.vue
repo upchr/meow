@@ -610,7 +610,8 @@ onBeforeUnmount(() => {
             :title="o.hint"
             @click="!o.disabled && pick(o.id)"
           >
-            {{ o.label }}
+            <!-- 后端不在本机时叫「服务器目录」：base 是后端那台机器上的路径 -->
+            {{ o.id === 'local' && !localBackend ? '服务器目录' : o.label }}
             <span v-if="o.disabled" class="ml-1.5 text-[11px] opacity-80">（下版）</span>
           </button>
         </div>
