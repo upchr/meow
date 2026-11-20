@@ -1,4 +1,13 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { setUnauthorizedHandler } from '@/api'
+import {
+  authMode,
+  authReady,
+  needToken,
+  refreshAuth,
+  setupRequired,
+  username,
+} from '@/stores/auth'
 
 /**
  * 用 hash 路由：Tauri 打包后加载的是本地 file://，
@@ -7,6 +16,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
+    { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
     { path: '/', name: 'home', component: () => import('@/views/HomeView.vue') },
     {
       path: '/category/:site',
@@ -86,6 +96,59 @@ const router = createRouter({
     // 新导航：回顶
     return { top: 0 }
   },
+})
+
+/*
+ * 鉴权守卫（公网 v2）。
+ * - 首次启动：setupRequired → /login（LoginView 自动切成 setup 形态）
+ * - 密码模式且没有会话 → /login
+ * - 纯令牌模式且本地没有令牌 → /login（令牌输入形态）
+ * - 未配置鉴权（局域网/TV 本机网关/PC 本机插件）→ 完全不变
+ */
+router.beforeEach(async (to) => {
+  if (!authReady.value) await refreshAuth()
+  if (to.name === 'login') return true
+  if (setupRequired.value) return { name: 'login' }
+  if (authMode.value === 'password' && !username.value) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (needToken.value) return { name: 'login' }
+  return true
+})
+
+// 任意受保护 API 返回 401（会话过期/令牌被撤销）→ 回登录页。
+setUnauthorizedHandler((reason: string) => {
+  /*
+   * 等 router ready 再跳：启动时的鉴权检查（main.ts 的 refreshAuth）跑在
+   * `mount()` 之前，那时路由的初始导航还没落地 —— 立刻 replace 会被它覆盖，
+   * `?reason=` 丢掉，登录页只剩通用文案（2026-11-20 实测）。
+   */
+  void router.isReady().then(() => {
+    const cur = router.currentRoute.value
+    if (cur.name === 'login') {
+      /*
+       * 守卫可能已经先一步把人送到登录页（启动时的初始导航），那时没有
+       * reason。这里把原因补进 query —— 少了这一步，登录页只能显示通用文案
+       * "设备令牌已失效"，说不清是撤销、过期还是换了网络（2026-11-20 实测）。
+       */
+      if (reason && String(cur.query.reason || '') !== reason) {
+        void router.replace({ name: 'login', query: { ...cur.query, reason } })
+      }
+      return
+    }
+    /*
+     * 把 401 的原因带到登录页（session_expired / password_changed /
+     * token_invalid / token_expired / ip_mismatch）。不传的话用户只看到
+     * "请重新登录"，分不清是被撤销、令牌过期还是管理员改了密码。
+     */
+    void router.replace({
+      name: 'login',
+      query: {
+        redirect: router.currentRoute.value.fullPath,
+        ...(reason ? { reason } : {}),
+      },
+    })
+  })
 })
 
 export default router

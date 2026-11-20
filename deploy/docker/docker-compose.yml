@@ -50,6 +50,25 @@ services:
       # ★ 后端读取顺序：本变量 → policy.json 的 authToken，两处都空才关闭。
       # ★ 用 `-` 而非 `:-`，与其他两项同理：显式置空要能表达"关掉"。
       MEOW_AUTH_TOKEN: ${MEOW_AUTH_TOKEN-}
+      # ---- 公网部署 v2（应用内账号）----
+      # 空 = 不开启（旧行为）；on = 生成首个账号前必须先拿 setup 令牌。
+      # 首次启动在容器日志里找 "[auth] setup token:"（或自己设 MEOW_SETUP_TOKEN）。
+      MEOW_AUTH_MODE: ${MEOW_AUTH_MODE-}
+      MEOW_SETUP_TOKEN: ${MEOW_SETUP_TOKEN-}
+      # 源配置出口 /config.json、/spider-latest.jar 的 ?key=（空=自动生成并打印一次）
+      MEOW_CONFIG_KEY: ${MEOW_CONFIG_KEY-}
+      # 可选来源白名单，逗号分隔 CIDR。回环永远放行；不设 = 不限制。
+      MEOW_ALLOW_CIDR: ${MEOW_ALLOW_CIDR-}
+      MEOW_ALLOW_LOOPBACK_MEDIA: ${MEOW_ALLOW_LOOPBACK_MEDIA-}
+      # 反代/容器里终结 TLS 时置 1：让密码登录与 Secure Cookie 生效。
+      MEOW_PUBLIC_TLS: ${MEOW_PUBLIC_TLS-}
+      # 本编排里 apiserver 默认只绑回环、唯一入口是 web 容器，所以默认 1：
+      # 不信任反代头的话所有请求都算成 nginx 的 IP，登录限流会变成全站共享、
+      # 设备令牌的 bindIp 也永远对不上。若把 APISERVER_BIND 改成 0.0.0.0，
+      # 请显式写 MEOW_TRUST_PROXY= （空），否则客户端可伪造 X-Forwarded-For。
+      MEOW_TRUST_PROXY: ${MEOW_TRUST_PROXY-1}
+      # 纯 HTTP 公网要密码登录时必须显式置 1（不推荐，仅内网/临时）
+      MEOW_ALLOW_INSECURE_PASSWORD: ${MEOW_ALLOW_INSECURE_PASSWORD-}
       # CORS 来源策略。★★ 默认 `*` = 不限制（内网 / Tailscale / 反代部署开箱可用）。
       #
       #   默认不拦的理由：部署形态太多（局域网、Tailscale、ZeroTier、frp、
@@ -94,7 +113,10 @@ services:
     image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.23}}
     container_name: meow-drpy
     ports:
-      - "${DRPY_PORT:-30013}:9330"
+      # drpy 是 js 源执行引擎，暴露公网等于把 RCE 面交出去；apiserver 走
+      # 内网服务名访问它，宿主端口只给排障用 → 默认绑回环。要给局域网用时
+      # 显式 DRPY_BIND=0.0.0.0（并自担风险）。
+      - "${DRPY_BIND:-127.0.0.1}:${DRPY_PORT:-30013}:9330"
     environment:
       DRPY_PORT: "9330"
       DRPY_STRIP_REMOTE: "1"

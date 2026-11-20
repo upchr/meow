@@ -1,4 +1,4 @@
-import { apiBase, isDesktop, request } from './index'
+import { apiBase, isDesktop, mediaTicketFor, request } from './index'
 
 /**
  * 本地 / NAS 片库的前端接口。
@@ -100,6 +100,8 @@ export async function testLibrary(lib: Partial<LibraryInfo>): Promise<{ ok: bool
  */
 export function libraryStream(lib: string, path: string): string {
   const q = new URLSearchParams({ lib, path })
+  const mt = mediaTicketFor('library', lib)
+  if (mt) q.set('mt', mt)
   return `${apiBase()}/api/library/stream?${q}`
 }
 
@@ -724,6 +726,9 @@ export function posterUrl(src: string): string {
     .replace('/s_ratio_poster/', '/l_ratio_poster/')
     .replace('/m_ratio_poster/', '/l_ratio_poster/')
   const q = new URLSearchParams({ url: big, referer: 'https://movie.douban.com/' })
+  // 海报是 <img> 直取，带不了 X-Meow-Token；鉴权开启时用短时票
+  const mt = mediaTicketFor('proxy')
+  if (mt) q.set('mt', mt)
   return `${b}/api/proxy/image?${q}`
 }
 

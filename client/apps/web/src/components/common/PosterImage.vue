@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { proxyImage } from '@/api'
+import { ensureProxyTicket, refreshMediaTickets } from '@/api/mediaTicket'
 
 /**
  * 统一的封面图。
@@ -26,6 +27,8 @@ const props = withDefaults(
 
 const failed = ref(false)
 const loaded = ref(false)
+/** 是否已经为这张图刷过票重试；换 src 时重置 */
+let retriedForTicket = false
 
 function resolve(s: string): string {
   if (!s) return ''
@@ -40,11 +43,36 @@ watch(
   (s) => {
     failed.value = false
     loaded.value = false
+    retriedForTicket = false
     url.value = resolve(s)
   },
 )
 
-function onError() {
+/**
+ * 加载失败。
+ *
+ * <p>★ 首次失败先怀疑**媒体票过期**（后端重启 30 分钟后旧票全失效，图片是
+ * 401，而 `<img>` 拿不到状态码）：刷一次票、换 URL 重试。只有重试仍失败才落
+ * 「点击重试」占位 —— 否则用户看到满屏裂图，以为网络坏了（2026-11-20 复核）。
+ *
+ * <p>每张图只自动重试一次：真 404 的源站不该被反复请求。
+ */
+async function onError(): Promise<void> {
+  if (props.proxied && !retriedForTicket) {
+    retriedForTicket = true
+    refreshMediaTickets()
+    try {
+      await ensureProxyTicket()
+      const next = resolve(props.src)
+      if (next) {
+        // 破缓存：同一 URL 的 401 可能被浏览器记住
+        url.value = `${next}${next.includes('?') ? '&' : '?'}_r=${Date.now()}`
+        return
+      }
+    } catch {
+      /* 取票失败 → 走占位 */
+    }
+  }
   failed.value = true
   loaded.value = false
   // 清掉 src：img 元素在 v-if 收掉之前可能还会重绘一帧，
@@ -63,6 +91,8 @@ function retry(e: Event) {
   e.preventDefault()
   failed.value = false
   loaded.value = false
+  // 用户主动点重试 = 再给一次"刷票重试"的机会（可能就是他刚重启完后端）
+  retriedForTicket = false
   const base = resolve(props.src)
   url.value = base ? `${base}${base.includes('?') ? '&' : '?'}_r=${Date.now()}` : ''
 }

@@ -105,6 +105,20 @@ public class MainActivity extends Activity {
     static final String K_DEBUG = "debug_server";
     /** 远程调试令牌。开关每次从关到开都会生成新的，旧令牌立即失效。 */
     static final String K_DEBUG_TOKEN = "debug_token";
+    /**
+     * 设备令牌（auth v2）的壳侧副本。
+     *
+     * <p>★ 为什么要在 prefs 里再存一份：`meow.authToken` 原本只在前端
+     * localStorage。**重装 APK（应用内更新走的也是 pm install -r）之后
+     * WebView 的 localStorage 在部分 ROM / 模拟器上会被清空** —— 实测
+     * MuMu Android 15：装完新包打开就是登录页，用户得重新配对一次。
+     * prefs 与应用数据目录同生命周期、install -r 保留，所以在这里存一份，
+     * 页面加载时补回 localStorage。
+     *
+     * <p>安全等级与 localStorage 相同（都在应用私有目录、明文）：这个值
+     * 只对本机有效，网页端随时可撤销，不额外增加攻击面。
+     */
+    static final String K_AUTH = "auth_token";
 
     /*
      * WebView 文件选择器的请求码。
@@ -399,6 +413,7 @@ public class MainActivity extends Activity {
                 //   且 reload 完成后因 onPageFinished 已跑过而永不复检 → 用户
                 //   看到"打不开这个地址"，点重试又走同一条路，形成死循环。
                 if (applyApiBaseIfNeeded()) return;
+                if (restoreAuthToken(url)) return;
                 injectNav();
                 importPendingConfig();
                 auditStyleApplied(view);
@@ -1210,6 +1225,41 @@ public class MainActivity extends Activity {
                 : "try{localStorage.setItem('meow.api'," + jsonStr(api) + ");"
                   + "localStorage.removeItem('meow.api.scope')}catch(e){}";
         web.evaluateJavascript(js, null);
+    }
+
+    /** 本次页面生命周期里是否已经补过设备令牌（防 reload 自环）。 */
+    private boolean authTokenRestored = false;
+
+    /**
+     * 把壳里保存的设备令牌补回 localStorage。
+     *
+     * <p>为什么需要（见 {@link #K_AUTH}）：重装 APK 后 WebView 的 localStorage
+     * 在部分 ROM / 模拟器上会被清空，而页面 JS 在 onPageFinished 之前就跑完了
+     * —— 前端判定"没有令牌"并跳到登录页，用户得重新配对一次。
+     *
+     * <p>两个细节：
+     *  · **只补不覆盖**：页面里已有值（刚配对、或用户换了新令牌）优先；
+     *  · 如果当前正停在登录页，补完 **reload 一次**让前端带着令牌重新判定。
+     *    只补不 reload 的话，登录页已经在 `/login` 上、没有任何导航会重新触发
+     *    守卫（用户看到的是"令牌明明还在却让我配对"）。`authTokenRestored`
+     *    保证一个页面生命周期只 reload 一次，避免守卫再次送回时死循环。
+     *
+     * @return true 表示已发起 reload，调用方必须立即返回（同 applyApiBaseIfNeeded）
+     */
+    private boolean restoreAuthToken(String url) {
+        if (web == null) return false;
+        String tk = prefs.getString(K_AUTH, "");
+        if (tk == null || tk.isEmpty()) return false;
+        String js = "try{var k='meow.authToken';if(!localStorage.getItem(k))localStorage.setItem(k,"
+                + jsonStr(tk) + ")}catch(e){}";
+        if (url != null && url.contains("#/login") && !authTokenRestored) {
+            authTokenRestored = true;
+            web.evaluateJavascript(js, v -> web.reload());
+            return true;
+        }
+        authTokenRestored = true;
+        web.evaluateJavascript(js, null);
+        return false;
     }
 
     private Runnable watchdog;

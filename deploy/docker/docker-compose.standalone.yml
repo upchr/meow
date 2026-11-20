@@ -40,6 +40,22 @@ services:
       MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://drpy:9330}
       MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
       MEOW_AUTH_TOKEN: ${MEOW_AUTH_TOKEN-}
+      # ---- 公网部署 v2（应用内账号）----
+      # 空 = 不开启（旧行为）；on = 生成首个账号前必须先拿 setup 令牌。
+      # 首次启动在容器日志里找 "[auth] setup token:"（或自己设 MEOW_SETUP_TOKEN）。
+      MEOW_AUTH_MODE: ${MEOW_AUTH_MODE-}
+      MEOW_SETUP_TOKEN: ${MEOW_SETUP_TOKEN-}
+      # 源配置出口 /config.json、/spider-latest.jar 的 ?key=（空=自动生成并打印一次）
+      MEOW_CONFIG_KEY: ${MEOW_CONFIG_KEY-}
+      # 可选来源白名单，逗号分隔 CIDR。回环永远放行；不设 = 不限制。
+      MEOW_ALLOW_CIDR: ${MEOW_ALLOW_CIDR-}
+      MEOW_ALLOW_LOOPBACK_MEDIA: ${MEOW_ALLOW_LOOPBACK_MEDIA-}
+      # 反代/容器里终结 TLS 时置 1：让密码登录与 Secure Cookie 生效。
+      MEOW_PUBLIC_TLS: ${MEOW_PUBLIC_TLS-}
+      # 只有确实在受信代理后面才置 1：否则 X-Forwarded-For 可被伪造。
+      MEOW_TRUST_PROXY: ${MEOW_TRUST_PROXY-}
+      # 纯 HTTP 公网要密码登录时必须显式置 1（不推荐，仅内网/临时）
+      MEOW_ALLOW_INSECURE_PASSWORD: ${MEOW_ALLOW_INSECURE_PASSWORD-}
       MEOW_CORS: ${MEOW_CORS-*}
       JAVA_OPTS: ${APISERVER_JAVA_OPTS:--Xms64m -Xmx512m -Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8}
     restart: unless-stopped
@@ -60,7 +76,10 @@ services:
     image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.23}}
     container_name: meow-drpy
     ports:
-      - "${DRPY_PORT:-30013}:9330"
+      # drpy 是 js 源执行引擎，暴露公网等于把 RCE 面交出去；apiserver 走
+      # 内网服务名访问它，宿主端口只给排障用 → 默认绑回环。要给局域网用时
+      # 显式 DRPY_BIND=0.0.0.0（并自担风险）。
+      - "${DRPY_BIND:-127.0.0.1}:${DRPY_PORT:-30013}:9330"
     environment:
       DRPY_PORT: "9330"
       DRPY_STRIP_REMOTE: "1"

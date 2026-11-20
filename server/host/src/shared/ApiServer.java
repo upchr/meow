@@ -184,6 +184,8 @@ public class ApiServer {
      * 依赖启动参数的一次性初始化，必须在 {@code main()} 里 MainArgs.set 之后调用。
      */
     private static void initAfterArgs() {
+        // 应用内账号体系：必须在 --data-dir 解析之后（auth.json 在数据目录）。
+        core.Auth.init();
         // 类加载期不能读 policy.json（那时 --data-dir 还没解析），在这里补读。
         SearchCache.reloadTtl();
         // 基线必须在 loadMultiInstances 之前拍：它会把多实例塞进 SITES，
@@ -728,9 +730,60 @@ public class ApiServer {
         return heap < 256L * 1024 * 1024 ? 6_000L : 8_000L;
     }
 
+    /**
+     * 本机运维子命令（auth v2）。在 {@link #main} 里于 boot() 之前调用：
+     * 只初始化 DataPaths 与 {@code core.Auth}（两者都不碰网络/Jars），
+     * 改完 {@code auth.json} 立即退出 —— 忘记管理员密码 / 要关鉴权时，
+     * 在服务器上跑一条命令即可，不必去数据目录手工删文件。
+     *
+     * <ul>
+     *   <li>{@code --auth-reset-password=<新密码>}：重置管理员密码（≥10 位），
+     *       全部会话立即失效，设备令牌/configKey 不动；</li>
+     *   <li>{@code --auth-off}：清空密码/设备令牌/configKey，落一份空 auth.json，
+     *       鉴权回到关闭态（旧部署行为）。</li>
+     * </ul>
+     *
+     * @return true = 已按子命令处理并退出进程（调用方直接 return）
+     */
+    private static boolean runAuthCli(String[] args) {
+        String newPass = null;
+        boolean off = false;
+        for (String a : args) {
+            if (a.startsWith("--auth-reset-password=")) {
+                newPass = a.substring("--auth-reset-password=".length());
+            } else if (a.equals("--auth-reset-password")) {
+                System.err.println("[auth] 用法：--auth-reset-password=<新密码>（至少 10 位）");
+                System.exit(2);
+            } else if (a.equals("--auth-off")) {
+                off = true;
+            }
+        }
+        if (newPass == null && !off) return false;
+        core.Auth.init();
+        try {
+            if (off) {
+                core.Auth.disableAll();
+                System.out.println("[auth] 鉴权已关闭（auth.json 已清空，重启后生效）。");
+            } else {
+                core.Auth.resetPassword(newPass);
+                System.out.println("[auth] 管理员密码已重置，全部会话已失效。");
+                System.out.println("[auth] 数据目录: " + core.DataPaths.root().toAbsolutePath());
+            }
+        } catch (IllegalArgumentException e) {
+            System.err.println("[auth] " + e.getMessage());
+            System.exit(2);
+        } catch (Throwable e) {
+            System.err.println("[auth] 失败: " + e);
+            System.exit(1);
+        }
+        return true;
+    }
+
     public static void main(String[] args) throws Exception {
         // 先把参数交给 DataPaths（它可能在任何静态初始化里被调用）
         core.DataPaths.MainArgs.set(args);
+        // 本机运维子命令：改完即退出，不监听端口（见 runAuthCli 的说明）
+        if (runAuthCli(args)) return;
         for (String a : args) {
             // 支持三种写法：裸数字 / --port=NNNN / --port NNNN 的后半段
             if (!a.isEmpty() && !a.startsWith("--")) {
@@ -896,39 +949,10 @@ public class ApiServer {
      *
      * <p>策略见 {@link #corsAllowList()}：默认 `*`（不限制）。
      */
-    private static String corsAllowedOrigin(String origin) {
-        if (origin == null || origin.isEmpty()) return "*";   // 非浏览器，不受约束
-        String o = origin.trim().toLowerCase();
-        String[] allow = corsAllowList();
-        // null = 默认放行（本机自用 / 内网部署，用户明确要求"默认不拦截"）
-        if (allow == null) return origin;
-        // 空数组 = none：只放行本机与各端壳
-        // 桌面壳：Tauri 在 Windows 用 http://tauri.localhost，其它平台用 tauri://localhost
-        if (o.equals("tauri://localhost") || o.equals("http://tauri.localhost")
-                || o.equals("https://tauri.localhost")) return origin;
-        // file:// 页面（TV WebView / 本地 HTML 壳）
-        if (o.equals("null")) return origin;
-        /*
-         * TV 内置页（WebViewAssetLoader）与 meow.local 永远放行：
-         * 它们的来源既不是 http(s) 也不是任何"部署域名"，写进白名单也没法枚举。
-         */
-        if (o.startsWith("http://") || o.startsWith("https://")) {
-            String host = hostOf(o);
-            if (host.equals("localhost") || host.equals("127.0.0.1")
-                    || host.equals("[::1]") || host.equals("::1")
-                    || host.equals("meow.local")) {
-                return origin;
-            }
-            if (host.equals("appassets.androidplatform.net")
-                    || host.endsWith(".androidplatform.net")) return origin;
-        }
-        for (String x : allow) {
-            if (!x.isEmpty() && x.equals(o)) return origin;
-        }
-        System.out.println("[cors] blocked origin " + origin);
-            core.LogBuffer.warn("cors", "blocked origin " + core.LogBuffer.scrub(origin));
-        return null;
-    }
+    /*
+     * corsAllowedOrigin 的判定主体已抽成 corsTrust()（三态），见 applyCors 上方。
+     * 两份判据不能分开写 —— 2026-11-02 的"Tailscale 部署全站 403"就是漂移的结果。
+     */
 
     /**
      * 从 `scheme://host[:port]` 里取出 host。
@@ -994,11 +1018,81 @@ public class ApiServer {
         return false;
     }
 
+    /**
+     * Origin 判据的三态结果：
+     * <ul>
+     *   <li>{@link #CORS_EXPLICIT} —— 显式白名单命中，或各端壳的固定来源
+     *       （tauri / meow.local / androidplatform / localhost）。这些是部署者
+     *       或壳自己声明的受信来源，**可以下发 Allow-Credentials**（分体部署：
+     *       web 在 A 域、api 在 B:30011，浏览器靠 Cookie 会话才能用密码登录）；</li>
+     *   <li>{@link #CORS_REFLECT} —— 默认放行（MEOW_CORS 未设），反射任意
+     *       Origin。**不能配 credentials**：浏览器规范禁止 `*`/反射 + credentials
+     *       组合，配了等于全站关掉 CORS；令牌模式不受影响，Cookie 模式跨源
+     *       不可用是刻意的（要用 Cookie 就把 MEOW_CORS 写成显式白名单）；</li>
+     *   <li>{@link #CORS_BLOCKED} —— 拦截，不下发 ACAO。</li>
+     * </ul>
+     */
+    private static final int CORS_BLOCKED = -1;
+    private static final int CORS_REFLECT = 0;
+    private static final int CORS_EXPLICIT = 1;
+
+    private static int corsTrust(String origin) {
+        if (origin == null || origin.isEmpty()) return CORS_REFLECT;  // 非浏览器
+        String o = origin.trim().toLowerCase();
+        String[] allow = corsAllowList();
+        // null = 默认放行（本机自用 / 内网部署，用户明确要求"默认不拦截"）——反射，不带凭证
+        if (allow == null) return CORS_REFLECT;
+        // 空数组 = none：只放行本机与各端壳
+        // 桌面壳：Tauri 在 Windows 用 http://tauri.localhost，其它平台用 tauri://localhost
+        if (o.equals("tauri://localhost") || o.equals("http://tauri.localhost")
+                || o.equals("https://tauri.localhost")) return CORS_EXPLICIT;
+        // file:// 页面（TV WebView / 本地 HTML 壳）
+        if (o.equals("null")) return CORS_EXPLICIT;
+        /*
+         * TV 内置页（WebViewAssetLoader）与 meow.local 永远放行：
+         * 它们的来源既不是 http(s) 也不是任何"部署域名"，写进白名单也没法枚举。
+         */
+        if (o.startsWith("http://") || o.startsWith("https://")) {
+            String host = hostOf(o);
+            if (host.equals("localhost") || host.equals("127.0.0.1")
+                    || host.equals("[::1]") || host.equals("::1")
+                    || host.equals("meow.local")) {
+                return CORS_EXPLICIT;
+            }
+            if (host.equals("appassets.androidplatform.net")
+                    || host.endsWith(".androidplatform.net")) return CORS_EXPLICIT;
+        }
+        for (String x : allow) {
+            if (!x.isEmpty() && x.equals(o)) return CORS_EXPLICIT;
+        }
+        System.out.println("[cors] blocked origin " + origin);
+            core.LogBuffer.warn("cors", "blocked origin " + core.LogBuffer.scrub(origin));
+        return CORS_BLOCKED;
+    }
+
+    private static String corsAllowedOrigin(String origin) {
+        int t = corsTrust(origin);
+        if (t == CORS_BLOCKED) return null;
+        if (origin == null || origin.isEmpty()) return "*";
+        return origin.trim();
+    }
+
+    /** 该 Origin 是否可以带 `Access-Control-Allow-Credentials: true`（见 corsTrust 三态）。 */
+    private static boolean corsAllowCredentials(String origin) {
+        return corsTrust(origin) == CORS_EXPLICIT;
+    }
+
     /** 按来源重算一次 CORS 头（媒体/图片/jar 这些分支自己 set 头会覆盖全局策略）。 */
     private static void applyCors(HttpExchange ex) {
-        String allow = corsAllowedOrigin(ex.getRequestHeaders().getFirst("Origin"));
+        String origin = ex.getRequestHeaders().getFirst("Origin");
+        String allow = corsAllowedOrigin(origin);
         if (allow == null) ex.getResponseHeaders().remove("Access-Control-Allow-Origin");
-        else ex.getResponseHeaders().set("Access-Control-Allow-Origin", allow);
+        else {
+            ex.getResponseHeaders().set("Access-Control-Allow-Origin", allow);
+            if (corsAllowCredentials(origin))
+                ex.getResponseHeaders().set("Access-Control-Allow-Credentials", "true");
+            else ex.getResponseHeaders().remove("Access-Control-Allow-Credentials");
+        }
     }
 
     // ---------------------------------------------------------------- 限流
@@ -1109,6 +1203,10 @@ public class ApiServer {
 
     /** 哪些写操作需要 token。GET/HEAD 永不拦。 */
     private static boolean writeRequiresAuth(String method, String path) {
+        // 新总闸（会话/设备令牌）已经覆盖全部 /api/*，这里再按 legacy authToken
+        // 精确比对会把"网页密码登录的会话"和"UI 生成的设备令牌"全判成无效——
+        // 只在旧鉴权体系（auth 未启用）下保留这套写保护。
+        if (core.Auth.isApiAuthEnabled()) return false;
         if (authTokenExpected().isEmpty()) return false;
         String m = method == null ? "" : method.toUpperCase();
         if (m.equals("GET") || m.equals("HEAD") || m.equals("OPTIONS")) return false;
@@ -1227,6 +1325,379 @@ public class ApiServer {
         handle(ex);
     }
 
+    // ---------------------------------------------------------------- auth v2
+
+    /**
+     * 账号管理端点的凭证：**网页会话或 full 设备令牌**。
+     *
+     * <p>TV 壳的页面跑在 {@code http://meow.local}，连远程后端是跨源 ——
+     * fetch 不带 Cookie，网页会话在 TV 上根本不存在（实测 2026-11-20：
+     * 配对拿到设备令牌后打开账号弹框，设备列表 401）。full 令牌本来
+     * 就等于管理员能力（能导入源包=能改配置），让它管理设备/改密/轮换
+     * configKey 是同一语义；read 令牌仍然不行。
+     */
+    /**
+     * 401 响应体：带上失败原因（no_credentials / session_expired /
+     * password_changed / token_invalid / token_expired / ip_mismatch）。
+     *
+     * <p>不带原因时前端只能一律说"请重新登录"，用户分不清是会话过期、
+     * 设备被撤销、还是令牌绑定了别的网络。这里只透出代码内枚举值，
+     * 额外做一次白名单过滤（不允许任何外部字符进 JSON）。
+     */
+    private static String unauthorizedJson(core.Auth.Result r) {
+        String reason = r == null ? "" : r.reason;
+        reason = reason.replaceAll("[^a-z_]", "");
+        return "{\"code\":-1,\"msg\":\"unauthorized\",\"reason\":\"" + reason + "\"}";
+    }
+
+    private static core.Auth.Result requireAccountAdmin(HttpExchange ex) throws IOException {
+        core.Auth.Result r = core.Auth.authenticate(ex);
+        if (!r.ok) {
+            sendJson(ex, 401, unauthorizedJson(r));
+            return null;
+        }
+        if (!"full".equals(r.scope)) {
+            sendJson(ex, 403, "{\"code\":-1,\"msg\":\"full-scope token required\"}");
+            return null;
+        }
+        return r;
+    }
+
+    /** @return true = 已处理（含错误响应），调用方直接 return。 */
+    private static boolean handleAuthRoutes(HttpExchange ex, String path, String method) throws IOException {
+        if (!path.startsWith("/api/auth/")) return false;
+        String ip = core.Auth.clientIp(ex);
+        try {
+            if ("/api/auth/status".equals(path)) {
+                JSONObject o = core.Auth.status();
+                o.put("passwordAllowed", core.Auth.passwordAllowed(ex));
+                sendJson(ex, 200, o.toString());
+                return true;
+            }
+            if ("/api/auth/setup".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+                    return true;
+                }
+                if (!core.Auth.passwordAllowed(ex)) {
+                    sendJson(ex, 403, "{\"code\":-1,\"msg\":\"setup requires TLS or loopback\"}");
+                    return true;
+                }
+                if (core.Auth.hasPassword()) {
+                    sendJson(ex, 409, "{\"code\":-1,\"msg\":\"already initialized\"}");
+                    return true;
+                }
+                if (core.Auth.blocked("setup", ip) || !core.Auth.allow("setup", ip, 5, 60_000)) {
+                    sendJson(ex, 429, "{\"code\":-1,\"msg\":\"尝试过于频繁，请稍后再试\"}");
+                    return true;
+                }
+                JSONObject in = new JSONObject(read(ex.getRequestBody()));
+                if (!core.Auth.verifySetupToken(in.optString("token", ""))) {
+                    core.Auth.fail("setup", ip, 10, 600_000);
+                    sendJson(ex, 403, "{\"code\":-1,\"msg\":\"invalid setup token\"}");
+                    return true;
+                }
+                core.Auth.setPassword(in.optString("username", "admin"), in.optString("password", ""));
+                core.Auth.clearRate("setup", ip);
+                String sid = core.Auth.createSession();
+                core.Auth.setSessionCookie(ex, sid);
+                core.Auth.event("setup", "user=" + core.Auth.username(), ex);
+                JSONObject o = new JSONObject().put("ok", true).put("mode", core.Auth.authMode());
+                sendJson(ex, 200, o.toString());
+                return true;
+            }
+            if ("/api/auth/login".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+                    return true;
+                }
+                if (!core.Auth.hasPassword()) {
+                    sendJson(ex, 403, "{\"code\":-1,\"msg\":\"password login disabled\"}");
+                    return true;
+                }
+                if (!core.Auth.passwordAllowed(ex)) {
+                    sendJson(ex, 403, "{\"code\":-1,\"msg\":\"password login requires TLS\"}");
+                    return true;
+                }
+                if (core.Auth.blocked("login", ip) || !core.Auth.allow("login", ip, 5, 60_000)) {
+                    sendJson(ex, 429, "{\"code\":-1,\"msg\":\"尝试过于频繁，请稍后再试\"}");
+                    return true;
+                }
+                JSONObject in = new JSONObject(read(ex.getRequestBody()));
+                if (!core.Auth.verifyPassword(in.optString("username", ""), in.optString("password", ""))) {
+                    core.Auth.fail("login", ip, 10, 600_000);
+                    core.Auth.event("login_fail", "user=" + in.optString("username", ""), ex);
+                    sendJson(ex, 401, "{\"code\":-1,\"msg\":\"invalid credentials\"}");
+                    return true;
+                }
+                core.Auth.clearRate("login", ip);
+                String sid = core.Auth.createSession();
+                core.Auth.setSessionCookie(ex, sid);
+                core.Auth.event("login_ok", "", ex);
+                JSONObject o = new JSONObject().put("ok", true)
+                        .put("user", core.Auth.username())
+                        .put("mode", core.Auth.authMode());
+                sendJson(ex, 200, o.toString());
+                return true;
+            }
+            if ("/api/auth/logout".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+                    return true;
+                }
+                core.Auth.destroySession(core.Auth.sessionId(ex));
+                core.Auth.clearSessionCookie(ex);
+                sendJson(ex, 200, "{\"ok\":true}");
+                return true;
+            }
+            if ("/api/auth/me".equals(path)) {
+                // 会话或设备令牌都认：TV/PC 壳用令牌连接时也会问这一句
+                core.Auth.Result r = core.Auth.authenticate(ex);
+                if (!r.ok) {
+                    sendJson(ex, 401, unauthorizedJson(r));
+                    return true;
+                }
+                JSONObject o = new JSONObject().put("ok", true)
+                        .put("user", core.Auth.username())
+                        .put("scope", r.scope)
+                        .put("mode", core.Auth.authMode())
+                        // 设备/会话数量：改密和"退出所有设备"前给用户看影响面
+                        .put("devices", core.Auth.listDevices().length())
+                        .put("sessions", core.Auth.sessionCount())
+                        // 当前这台的令牌 id：设备列表据此打「本机」标记
+                        .put("deviceId", r.deviceId);
+                sendJson(ex, 200, o.toString());
+                return true;
+            }
+            if ("/api/auth/logout-others".equals(path)) {
+                core.Auth.Result r = requireAccountAdmin(ex);
+                if (r == null) return true;
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+                    return true;
+                }
+                /*
+                 * 「退出所有设备」= 撤销全部设备令牌 + 下线其它浏览器会话，
+                 * 保留当前会话（否则点一下把自己也踢了，用户会以为出错）。
+                 */
+                int dev = core.Auth.revokeAllDevices();
+                int ses = core.Auth.destroyOtherSessions(core.Auth.sessionId(ex));
+                core.Auth.event("logout_others", "devices=" + dev + " sessions=" + ses, ex);
+                sendJson(ex, 200, new JSONObject().put("ok", true)
+                        .put("devices", dev).put("sessions", ses).toString());
+                return true;
+            }
+            if ("/api/auth/events".equals(path)) {
+                core.Auth.Result r = requireAccountAdmin(ex);
+                if (r == null) return true;
+                int limit = 50;
+                try {
+                    String l = query(ex).get("limit");
+                    if (l != null) limit = Integer.parseInt(l);
+                } catch (Throwable ignored) {
+                }
+                sendJson(ex, 200, new JSONObject().put("ok", true)
+                        .put("events", core.Auth.events(limit)).toString());
+                return true;
+            }
+            if ("/api/auth/password".equals(path)) {
+                core.Auth.Result r = requireAccountAdmin(ex);
+                if (r == null) return true;
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+                    return true;
+                }
+                if (core.Auth.blocked("pwd", ip) || !core.Auth.allow("pwd", ip, 5, 60_000)) {
+                    sendJson(ex, 429, "{\"code\":-1,\"msg\":\"尝试过于频繁，请稍后再试\"}");
+                    return true;
+                }
+                JSONObject in = new JSONObject(read(ex.getRequestBody()));
+                if (!core.Auth.verifyPassword(core.Auth.username(), in.optString("old", ""))) {
+                    core.Auth.fail("pwd", ip, 10, 600_000);
+                    sendJson(ex, 403, "{\"code\":-1,\"msg\":\"wrong password\"}");
+                    return true;
+                }
+                core.Auth.setPassword(core.Auth.username(), in.optString("new", ""));
+                String sid = core.Auth.createSession();
+                core.Auth.setSessionCookie(ex, sid);
+                core.Auth.clearRate("pwd", ip);
+                core.Auth.event("password_changed", "", ex);
+                sendJson(ex, 200, "{\"ok\":true}");
+                return true;
+            }
+            if ("/api/auth/devices".equals(path)) {
+                core.Auth.Result r = requireAccountAdmin(ex);
+                if (r == null) return true;
+                if ("GET".equalsIgnoreCase(method)) {
+                    JSONObject o = new JSONObject().put("ok", true)
+                            .put("devices", core.Auth.listDevices());
+                    sendJson(ex, 200, o.toString());
+                    return true;
+                }
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"GET or POST required\"}");
+                    return true;
+                }
+                JSONObject in = new JSONObject(read(ex.getRequestBody()));
+                int days = Math.max(0, in.optInt("expiresInDays", 0));
+                long exp = days == 0 ? 0 : System.currentTimeMillis() + days * 86_400_000L;
+                JSONObject dev = core.Auth.newDevice(in.optString("name", "device"),
+                        in.optString("scope", "full"), exp, in.optString("bindIp", ""));
+                JSONObject o = new JSONObject().put("ok", true)
+                        .put("id", dev.optString("id"))
+                        .put("token", dev.optString("token"))
+                        .put("name", dev.optString("name"))
+                        .put("scope", dev.optString("scope"))
+                        .put("expiresAt", dev.optLong("expiresAt"));
+                core.Auth.event("device_created", dev.optString("name"), ex);
+                sendJson(ex, 200, o.toString());
+                return true;
+            }
+            if (path.startsWith("/api/auth/devices/")) {
+                core.Auth.Result r = requireAccountAdmin(ex);
+                if (r == null) return true;
+                if (!"DELETE".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"DELETE required\"}");
+                    return true;
+                }
+                String id = path.substring("/api/auth/devices/".length());
+                boolean ok = core.Auth.revokeDevice(id);
+                if (ok) core.Auth.event("device_revoked", id, ex);
+                sendJson(ex, ok ? 200 : 404, new JSONObject().put("ok", ok).toString());
+                return true;
+            }
+            if ("/api/auth/pair/start".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+                    return true;
+                }
+                if (!core.Auth.allow("pair", ip, 5, 60_000)) {
+                    sendJson(ex, 429, "{\"code\":-1,\"msg\":\"尝试过于频繁，请稍后再试\"}");
+                    return true;
+                }
+                sendJson(ex, 200, core.Auth.pairStart().toString());
+                return true;
+            }
+            if ("/api/auth/pair/approve".equals(path)) {
+                core.Auth.Result r = requireAccountAdmin(ex);
+                if (r == null) return true;
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+                    return true;
+                }
+                JSONObject in = new JSONObject(read(ex.getRequestBody()));
+                boolean ok = core.Auth.pairApprove(in.optString("code", ""), in.optString("name", "TV"));
+                if (ok) core.Auth.event("pair_approved", in.optString("name", "TV"), ex);
+                sendJson(ex, ok ? 200 : 404, new JSONObject().put("ok", ok).toString());
+                return true;
+            }
+            if ("/api/auth/pair/poll".equals(path)) {
+                if (!core.Auth.allow("pair-poll", ip, 30, 60_000)) {
+                    sendJson(ex, 429, "{\"code\":-1,\"msg\":\"尝试过于频繁，请稍后再试\"}");
+                    return true;
+                }
+                JSONObject o = core.Auth.pairPoll(query(ex).get("pairId"));
+                if (o == null) {
+                    sendJson(ex, 404, "{\"code\":-1,\"msg\":\"pair not found\"}");
+                } else {
+                    sendJson(ex, 200, o.toString());
+                }
+                return true;
+            }
+            if ("/api/auth/config-key/rotate".equals(path)) {
+                core.Auth.Result r = requireAccountAdmin(ex);
+                if (r == null) return true;
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+                    return true;
+                }
+                String key = core.Auth.rotateConfigKey();
+                core.Auth.event("config_key_rotated", "", ex);
+                sendJson(ex, 200, new JSONObject().put("ok", true).put("key", key).toString());
+                return true;
+            }
+            sendJson(ex, 404, "{\"code\":-1,\"msg\":\"unknown auth endpoint\"}");
+            return true;
+        } catch (IllegalArgumentException e) {
+            sendJson(ex, 400, "{\"code\":-1,\"msg\":\"invalid request (password min 10 chars)\"}");
+            return true;
+        } catch (Exception e) {
+            sendJson(ex, 400, "{\"code\":-1,\"msg\":\"invalid request\"}");
+            return true;
+        }
+    }
+
+    /** 媒体流：会话/设备令牌，或短时票 mt。 */
+    private static boolean mediaAuthorized(HttpExchange ex, String path, String method) throws IOException {
+        core.Auth.Result r = core.Auth.authenticate(ex);
+        if (r.ok) {
+            return !("read".equals(r.scope) && !core.Auth.isReadMethod(method));
+        }
+        Map<String, String> q = query(ex);
+        String ip = core.Auth.clientIp(ex);
+        if ("/api/library/stream".equals(path)) {
+            return core.Auth.validateTicket(q.get("mt"), "library",
+                    q.get("lib"), q.get("path"), null, ip);
+        }
+        String url = q.get("url");
+        if (url == null || url.isEmpty()) {
+            // 按 name/episode 取弹幕时没有 url 参数；票本身已绑 IP 与有效期，
+            // 这里给一个占位主机让它通过 proxy 票的"合法 URL"检查。
+            if (path.startsWith("/api/proxy/danmaku")) url = "https://danmaku.invalid/";
+        }
+        return core.Auth.validateTicket(q.get("mt"), "proxy", "", "", url, ip);
+    }
+
+    /** 发媒体票：已鉴权的客户端换取短时 URL 凭证（浏览器 <video> 用）。 */
+    private static void handleStreamTicket(HttpExchange ex) throws IOException {
+        core.Auth.Result r = core.Auth.authenticate(ex);
+        if (!r.ok) {
+            sendJson(ex, 401, unauthorizedJson(r));
+            return;
+        }
+        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+            sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST required\"}");
+            return;
+        }
+        try {
+            JSONObject in = new JSONObject(read(ex.getRequestBody()));
+            String kind = in.optString("kind", "library");
+            String ip = core.Auth.clientIp(ex);
+            String mt;
+            if ("proxy".equals(kind)) {
+                JSONArray urls = in.optJSONArray("urls");
+                List<String> list = new ArrayList<>();
+                if (urls != null) {
+                    for (int i = 0; i < urls.length(); i++) {
+                        String u = urls.optString(i, "");
+                        if (!u.isEmpty()) list.add(u);
+                    }
+                }
+                String single = in.optString("url", "");
+                if (list.isEmpty() && !single.isEmpty()) list.add(single);
+                for (String u : list) {
+                    if (!core.UrlSafety.isSafeMediaUrl(u)) {
+                        sendJson(ex, 403, "{\"code\":-1,\"msg\":\"url not allowed\"}");
+                        return;
+                    }
+                }
+                // HLS 分片常跨 CDN 域，按 host 白名单会误杀；空集合=只要求合法公网 URL。
+                mt = core.Auth.issueTicket("proxy", "", "", null, ip);
+            } else {
+                String lib = in.optString("lib", "");
+                String p = in.optString("path", "");
+                if (lib.isEmpty() || p.contains("..")) {
+                    sendJson(ex, 400, "{\"code\":-1,\"msg\":\"lib required\"}");
+                    return;
+                }
+                mt = core.Auth.issueTicket("library", lib, "", null, ip);
+            }
+            sendJson(ex, 200, new JSONObject().put("ok", true).put("mt", mt).toString());
+        } catch (Exception e) {
+            sendJson(ex, 400, "{\"code\":-1,\"msg\":\"bad request\"}");
+        }
+    }
+
     private static void handle(HttpExchange ex) throws IOException {
         Headers h = ex.getResponseHeaders();
         // CORS 收紧（docs/25 S3）。默认白名单只放三类来源：
@@ -1241,6 +1712,10 @@ public class ApiServer {
         if (allowOrigin != null) {
             h.add("Access-Control-Allow-Origin", allowOrigin);
             if (!"*".equals(allowOrigin)) h.add("Vary", "Origin");
+            // 分体部署（web 在 A 域、api 直连 B:30011）的密码会话靠这条：
+            // 显式受信来源才下发，默认反射（*）模式不下发 —— 浏览器规范禁止
+            // 反射 + credentials，配了等于全站关 CORS。
+            if (corsAllowCredentials(origin)) h.set("Access-Control-Allow-Credentials", "true");
         }
         // DELETE 必须在这里列出来：浏览器对 DELETE 一定先发预检，不在列表里
         // 收藏删除会被 CORS 挡在预检阶段（请求根本到不了后端）。
@@ -1265,6 +1740,12 @@ public class ApiServer {
             ex.close();
             return;
         }
+        // 来源白名单（可选）：比鉴权更前置，扫描器连 401 都拿不到。
+        // 回环永远放行，未设 MEOW_ALLOW_CIDR 时不改变任何旧行为。
+        if (!core.Auth.ipAllowed(ex)) {
+            sendJson(ex, 403, "{\"code\":-1,\"msg\":\"forbidden: source ip not allowed\"}");
+            return;
+        }
         // 代理与解析端点的 query 完全由调用方给，等于半个开放正向代理；
         // 被刷时先耗尽的是源站配额和我们的线程池，所以在路由前就挡住。
         if (path.equals("/api/parse") || path.startsWith("/api/proxy/")) {
@@ -1276,13 +1757,61 @@ public class ApiServer {
             }
         }
 
-        // 写操作鉴权（docs/25 S2）。默认 authToken 为空 = 关闭，保持既有部署
-        // 可用；在 policy.json 里设 authToken 之后，所有写端点都要求
-        // X-Meow-Token（或 ?token=）。GET 一律不拦——进度读取在每次播放都会
-        // 发生，给它加 key 只会让人把 token 写进 URL 日志里。
-        if (writeRequiresAuth(method, path) && !authTokenMatches(ex)) {
-            sendJson(ex, 401, "{\"code\":-1,\"msg\":\"unauthorized: X-Meow-Token required\"}");
+        // ---- 应用内账号体系（公网 v2） ----
+        // 认证路由自己处理鉴权（login/setup 匿名、devices 需会话），必须在总闸之前。
+        if (handleAuthRoutes(ex, path, method)) return;
+
+        // CatVod 出口：独立 configKey（有会话 Cookie 的浏览器也放行）。
+        if ("/config.json".equals(path) || "/spider-latest.jar".equals(path)) {
+            if (core.Auth.hasConfigKey()) {
+                String k = query(ex).get("key");
+                if (!core.Auth.configKeyValid(k) && !core.Auth.sessionAuth(ex).ok) {
+                    sendJson(ex, 403, "{\"code\":-1,\"msg\":\"forbidden: ?key= required\"}");
+                    return;
+                }
+            }
+        }
+
+        /*
+         * 总闸：配置了密码或设备令牌后，除 /api/health 外的 /api/* 全部要凭证。
+         * 未配置 = 旧行为（局域网/TV 本地网关/PC 本机插件零影响）。
+         *
+         * 媒体流例外：允许 ?mt= 短时票（浏览器 <video> 带不了 header）。
+         */
+        boolean authOn = core.Auth.isApiAuthEnabled() || core.Auth.isSetupRequired();
+        // TV 壳原生轮询投屏接收端：它拿不到 localStorage 里的设备令牌，
+        // 开启鉴权后必然 401（日志刷屏、首页卡片显示"点击重试"）。
+        // 这里匿名回一个"没有投屏会话"——LAN 投屏本来就不该在公网鉴权部署上工作。
+        if (authOn && "/api/cast/receiver/pending".equals(path)
+                && !core.Auth.authenticate(ex).ok) {
+            sendJson(ex, 200, "{\"ok\":true,\"state\":\"idle\"}");
             return;
+        }
+        if (authOn
+                && path.startsWith("/api/")
+                && !"/api/health".equals(path)) {
+            boolean media = "/api/proxy/stream".equals(path)
+                    || "/api/library/stream".equals(path)
+                    // 海报/弹幕都是 <img>/<track>/fetch 直取，带不了 header：
+                    // 与视频同用 proxy 票
+                    || "/api/proxy/image".equals(path)
+                    || path.startsWith("/api/proxy/danmaku");
+            if (media) {
+                if (!mediaAuthorized(ex, path, method)) {
+                    sendJson(ex, 401, "{\"code\":-1,\"msg\":\"unauthorized: media ticket required\"}");
+                    return;
+                }
+            } else {
+                core.Auth.Result ar = core.Auth.authenticate(ex);
+                if (!ar.ok) {
+                    sendJson(ex, 401, unauthorizedJson(ar));
+                    return;
+                }
+                if ("read".equals(ar.scope) && !core.Auth.isReadMethod(method)) {
+                    sendJson(ex, 403, "{\"code\":-1,\"msg\":\"read-only token\"}");
+                    return;
+                }
+            }
         }
 
         /*
@@ -1304,6 +1833,10 @@ public class ApiServer {
         }
 
         try {
+            if ("/api/stream/ticket".equals(path)) {
+                handleStreamTicket(ex);
+                return;
+            }
             if ("/api/health".equals(path)) {
                 sendJson(ex, 200, healthJson());
                 return;
@@ -1847,11 +2380,18 @@ public class ApiServer {
              * 重启后没有办法确认"到底生效了没" —— 前端只看得到写操作被拒，
              * 分不清是没生效还是令牌填错了。给个来源就能一眼分清。
              */
-            String tok = authTokenExpected();
-            o.put("authRequired", !tok.isEmpty());
-            o.put("authSource", tok.isEmpty() ? "none"
-                    : (System.getenv("MEOW_AUTH_TOKEN") != null
-                       && !System.getenv("MEOW_AUTH_TOKEN").trim().isEmpty()) ? "env" : "policy");
+            /*
+             * 鉴权是否开启 + 模式。只暴露布尔/枚举，**绝不回显任何凭据**。
+             *
+             * authMode：none / password / token-only。
+             * 前端据此决定：登录页、令牌输入页、还是直接可用。
+             */
+            boolean authOn = core.Auth.isApiAuthEnabled() || core.Auth.isSetupRequired();
+            o.put("authRequired", authOn);
+            o.put("authMode", core.Auth.authMode());
+            o.put("setupRequired", core.Auth.isSetupRequired());
+            o.put("authSource", authOn ? "app" : "none");
+            o.put("configKeyRequired", core.Auth.hasConfigKey());
             JSONArray disabled = new JSONArray();
             for (Map.Entry<String, routes.HealthRoutes.SiteHealth> e : routes.HealthRoutes.all().entrySet()) {
                 // 手动禁用单独列：前端要能画"已停用"徽标并在设置页给出恢复按钮。
@@ -1866,7 +2406,9 @@ public class ApiServer {
              * 一个配错的表就让 /api/health 报"244/270 降级"，看着像全线崩溃。
              */
             routes.HealthRoutes.putSummary(o);
-            o.put("dataDir", core.DataPaths.root().toAbsolutePath().toString());
+            // 开启鉴权后不再对外暴露服务器文件路径（未鉴权的老部署保持原样，
+            // 诊断脚本与用户都习惯了这一格）
+            o.put("dataDir", authOn ? "" : core.DataPaths.root().toAbsolutePath().toString());
             /*
              * 服务器当前时间（毫秒）。
              *
@@ -9308,6 +9850,12 @@ public class ApiServer {
                 sendText(ex, 200, xml, "text/xml; charset=utf-8");
                 return;
             }
+            // 公网加固：url 由调用方给，必须过 SSRF 校验（严格档，只允许公网 http/https）。
+            if (!core.UrlSafety.isSafeHttpUrl(direct)) {
+                core.LogBuffer.warn("danmaku", "blocked ssrf " + core.LogBuffer.scrub(direct));
+                sendText(ex, 403, "<?xml version=\"1.0\"?><i></i>", "text/xml; charset=utf-8");
+                return;
+            }
             String body = fetchText(direct, 20_000);
             if (body == null || !body.contains("<d ")) body = "<?xml version=\"1.0\"?><i></i>";
             sendText(ex, 200, body, "text/xml; charset=utf-8");
@@ -10211,9 +10759,10 @@ public class ApiServer {
              * POST（那个需要令牌）。所以这里只回 authRequired。
              */
             JSONObject p = loadPolicy();
-            boolean authOn = !authTokenExpected().isEmpty();
+            boolean authOn = core.Auth.isApiAuthEnabled() || core.Auth.isSetupRequired();
             p.remove("authToken");
             p.put("authRequired", authOn);
+            p.put("authMode", core.Auth.authMode());
             sendJson(ex, 200, p.toString());
             return;
         }
@@ -10631,7 +11180,8 @@ public class ApiServer {
     private static PlaylistOut buildProxiedPlaylist(String text, String baseUrl, String referer,
                                                     String ua, String selfBase,
                                                     String extraHeaders,
-                                                    java.util.Set<Double> adDur) throws IOException {
+                                                    java.util.Set<Double> adDur,
+                                                    String mt, String ct) throws IOException {
         PlaylistOut out = new PlaylistOut();
         StringBuilder sb = new StringBuilder(text.length() + 256);
         boolean skipUri = false;
@@ -10670,7 +11220,7 @@ public class ApiServer {
                         // 会把路径拼坏（实测荐片的 AES key 变成 normal/1649851//api/...）
                         String abs = resolveUrl(baseUrl, inner);
                         t = t.substring(0, a)
-                                + proxyUrl(abs, referer, ua, selfBase, extraHeaders)
+                                + proxyUrl(abs, referer, ua, selfBase, extraHeaders, mt, ct)
                                 + t.substring(b);
                     }
                 }
@@ -10696,7 +11246,7 @@ public class ApiServer {
             out.keptDur += pendingDur;
             pendingDur = 0;
             out.segs++;
-            sb.append(proxyUrl(abs, referer, ua, selfBase, extraHeaders)).append('\n');
+            sb.append(proxyUrl(abs, referer, ua, selfBase, extraHeaders, mt, ct)).append('\n');
         }
         out.body = sb.toString();
         return out;
@@ -10926,7 +11476,7 @@ public class ApiServer {
             String selfBase = baseUrlFor(ex);
 
             PlaylistOut po = buildProxiedPlaylist(text, baseUrl, referer, ua, selfBase,
-                    extraHeaders, null);
+                    extraHeaders, null, q.get("mt"), q.get("ct"));
 
             /*
              * 广告分片（TVBox `rules` 表的**播放器语义**）。
@@ -10945,7 +11495,7 @@ public class ApiServer {
                 if (ad != null) {
                     String work = applyAdTextRules(text, ad);
                     PlaylistOut cut = buildProxiedPlaylist(work, baseUrl, referer, ua, selfBase,
-                            extraHeaders, adDurations(ad));
+                            extraHeaders, adDurations(ad), q.get("mt"), q.get("ct"));
                     double orig = playlistDuration(text);
                     int removed = playlistSegments(text) - cut.segs;
                     if (cut.segs == 0 || (orig > 0 && cut.keptDur < orig * 0.5)) {
@@ -11089,7 +11639,7 @@ public class ApiServer {
      *                     否则首片用 Cookie 拿到了、后续分片又 403
      */
     private static String proxyUrl(String abs, String referer, String ua, String selfBase,
-                                   String extraHeaders)
+                                   String extraHeaders, String mt, String ct)
             throws IOException {
         StringBuilder sb = new StringBuilder(selfBase).append("/api/proxy/stream?url=")
                 .append(URLEncoder.encode(abs, "UTF-8"));
@@ -11099,6 +11649,11 @@ public class ApiServer {
             sb.append("&ua=").append(URLEncoder.encode(ua, "UTF-8"));
         if (extraHeaders != null && !extraHeaders.isEmpty())
             sb.append("&headers=").append(URLEncoder.encode(extraHeaders, "UTF-8"));
+        // 分片/EXT-X-KEY/EXT-X-MAP 必须继承播放凭证：浏览器 <video> 带不了 header。
+        if (mt != null && !mt.isEmpty())
+            sb.append("&mt=").append(URLEncoder.encode(mt, "UTF-8"));
+        if (ct != null && !ct.isEmpty())
+            sb.append("&ct=").append(URLEncoder.encode(ct, "UTF-8"));
         return sb.toString();
     }
 

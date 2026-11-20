@@ -297,9 +297,9 @@ describe('窄磁贴/表单标签不被截断', () => {
     expect(src).not.toContain("label: '失败结果缓存'")
   })
 
-  it('连接区两个标签用 w-20，5 个字的「写操作令牌」不换行', () => {
+  it('连接区两个标签用 w-20，「后端地址 / 设备令牌」不换行', () => {
     expect(src).toContain('class="w-20 shrink-0 text-xs text-ink-3">后端地址')
-    expect(src).toContain('class="w-20 shrink-0 text-xs text-ink-3">写操作令牌')
+    expect(src).toContain('class="w-20 shrink-0 text-xs text-ink-3">设备令牌')
   })
 })
 

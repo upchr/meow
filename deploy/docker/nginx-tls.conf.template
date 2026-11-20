@@ -1,0 +1,44 @@
+# 可选：TLS 终结（同容器内再开一个 8443 SSL server，转发到 8080 的明文 server）。
+#
+# 为什么用"整站反代到 127.0.0.1:8080"而不是把 location 再抄一遍：
+# 静态缓存、/config.json、/api 流式参数只有一份实现，抄两份迟早漂移。
+#
+# 启用方式见 docker-compose.tls.yml。证书文件：
+#   /etc/nginx/certs/fullchain.pem
+#   /etc/nginx/certs/privkey.pem
+server {
+    listen 8443 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:meow_tls:10m;
+    ssl_session_timeout 1h;
+
+    # HSTS：让浏览器记住"这个域名只走 HTTPS"一年。
+    #
+    # ★ 只在确认长期用 HTTPS 时启用。一旦发出去，用户改回 http 会被浏览器直接
+    #   拒绝访问，直到 max-age 过期或手动清 HSTS 缓存 —— 对"先试一下 TLS"的部署
+    #   是个坑，临时验证请把这行注释掉。不加 includeSubDomains：不确定你是不是
+    #   所有子域都有证书。
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # 视频代理是流式的
+    proxy_buffering off;
+    proxy_request_buffering off;
+    client_max_body_size 64m;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        # 保留原始 Host（含端口）：后端按它生成 m3u8 分片与 jar 的绝对地址
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}

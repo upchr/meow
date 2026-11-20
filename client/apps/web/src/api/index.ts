@@ -354,6 +354,46 @@ async function request<T>(
   return (await healthInflight) as T
 }
 
+/** 401 的统一出口：由 auth store 注册，跳登录页；避免 api 层 import router。 */
+let unauthorizedHandler: ((reason: string) => void) | null = null
+
+export function setUnauthorizedHandler(fn: ((reason: string) => void) | null): void {
+  unauthorizedHandler = fn
+}
+
+/**
+ * 分体部署的跨源 Cookie 会话开关（auth v2）。
+ *
+ * <p>web 前端在 A 域、API 直连 B:30011 时，登录后的会话 Cookie 存在 API 域上，
+ * 所有 `request()` 都要 `credentials:'include'` 才能带上；后端必须在
+ * `MEOW_CORS` 里显式白名单 web 的 Origin（会回 Allow-Credentials）。
+ * 由 auth store 在拿到状态后设置 —— api 层不 import store（会循环）。
+ *
+ * <p>默认 false：同源部署 / 令牌模式零变化（`*` + credentials 被浏览器禁止）。
+ */
+let crossOriginCredentials = false
+
+export function setCrossOriginCredentials(v: boolean): void {
+  crossOriginCredentials = !!v
+}
+
+export class ApiHttpError extends Error {
+  status: number
+  /**
+   * 401 的具体原因（后端 `unauthorizedJson` 给的枚举）：
+   * `no_credentials` / `session_expired` / `password_changed` /
+   * `token_invalid` / `token_expired` / `ip_mismatch`。
+   * 登录页据此告诉用户"为什么被踢出来"，而不是一律"请重新登录"。
+   */
+  reason: string
+
+  constructor(message: string, status: number, reason = '') {
+    super(message)
+    this.status = status
+    this.reason = reason
+  }
+}
+
 async function requestUncached<T>(
   path: string,
   options: { method?: string; body?: unknown; timeout?: number; keepalive?: boolean } = {},
@@ -373,29 +413,78 @@ async function requestUncached<T>(
     const headers: Record<string, string> = {}
     if (body) headers['Content-Type'] = 'application/json'
     if (token) headers['X-Meow-Token'] = token
-    const res = await fetch(base() + path, {
+    const init: RequestInit = {
       method,
       headers: Object.keys(headers).length ? headers : undefined,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
+      // 分体部署（web 在 A 域、api 直连 B:30011）：密码模式的会话 Cookie 在
+      // API 域上，跨源 fetch 必须 include 才能带上 —— 前提是后端 MEOW_CORS
+      // 显式白名单了这个来源（此时后端会回 Allow-Credentials）。
+      // 默认 same-origin：令牌模式 / 同源部署零变化（* + credentials 会被
+      // 浏览器拒绝，不能全局 include）。
+      credentials: crossOriginCredentials ? 'include' : 'same-origin',
       // keepalive：pagehide 时发的请求能活过页面卸载。
       // 没有它，关窗口前的最后一次进度推送会被浏览器直接砍掉（实测表现是
       // 下次打开还停在旧位置）。
       ...(keepalive ? { keepalive: true } : {}),
-    })
+    }
+    let res: Response
+    try {
+      res = await fetch(base() + path, init)
+    } catch (e) {
+      /*
+       * 网络层失败重试一次。
+       *
+       * 踩过（2026-11-20 实测）：后端重启（升级 / Docker 重建 / NAS 重启）那几秒
+       * 里打开首页，所有请求都是 Failed to fetch，页面停在「连不上后端，点刷新再试」
+       * ——用户以为坏了。后端起来通常只需 1–3 秒，这里等 600ms 重试一次能吃掉
+       * 大部分窗口；真正的断网最多多等 600ms 就报错。
+       * 超时（AbortController）不重试：那是慢，不是断。
+       */
+      if (controller.signal.aborted) throw e
+      await new Promise((r) => setTimeout(r, 600))
+      res = await fetch(base() + path, init)
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       // 后端异常时可能返回非 JSON（空响应 / HTML 错误页），
       // 直接 res.json() 会抛 "Unexpected end of JSON input"，
       // 对用户毫无信息量，这里尽量把真实原因带出来
       let detail = text
+      let reason = ''
       try {
         const j = JSON.parse(text)
         detail = j?.msg || j?.message || text
+        reason = typeof j?.reason === 'string' ? j.reason : ''
       } catch {
         /* 不是 JSON 就原样展示 */
       }
-      throw new Error(`[${method}] ${path} → ${res.status} ${detail.slice(0, 200) || res.statusText}`)
+      // /api/stream/ticket 在**未开鉴权**的部署上必然 401（端点存在但没有凭证体系）。
+      // 玩家进播放页会无条件预取这张票，如果把它当成"会话过期"跳登录，
+      // 所有局域网/TV 本机网关部署一播放就被弹到登录页（2026-11-19 复查发现）。
+      /*
+       * 静默的 auth 端点：它们本身就是"未登录"的常态，401 是预期结果。
+       *
+       * ★ `/api/auth/me` **不在静默名单里**（2026-11-20 实测）：设备令牌被撤销
+       *   后，TV 界面靠本地缓存照样能打开首页，用户以为还能用，点什么都失败；
+       *   而 me 的 401 被静默吞掉，永远不跳登录页。放到会触发跳转的那一侧，
+       *   启动时的鉴权检查才能把"令牌已失效"变成登录页上的一句话。
+       */
+      const quietAuth =
+        path.startsWith('/api/auth/status') ||
+        path.startsWith('/api/auth/login') ||
+        path.startsWith('/api/auth/setup') ||
+        path.startsWith('/api/auth/logout') ||
+        path.startsWith('/api/auth/pair/')
+      if (res.status === 401 && !quietAuth && !path.startsWith('/api/stream/ticket')) {
+        unauthorizedHandler?.(reason)
+      }
+      throw new ApiHttpError(
+        `[${method}] ${path} → ${res.status} ${detail.slice(0, 200) || res.statusText}`,
+        res.status,
+        reason,
+      )
     }
     const raw = await res.text()
     if (!raw) throw new Error(`[${method}] ${path} → 后端返回空响应（服务可能正在重启）`)
@@ -661,6 +750,21 @@ export async function fetchParse(
   }
 }
 
+/**
+ * 媒体票缓存（auth v2）。由 `api/mediaTicket.ts` 通过 /api/stream/ticket 刷新；
+ * 这里只做同步读取，避免 proxyStream/libraryStream 变成 async（调用点多）。
+ */
+const MEDIA_TICKETS = new Map<string, string>()
+
+export function setMediaTicket(kind: 'proxy' | 'library', mt: string, lib = ''): void {
+  if (!mt) return
+  MEDIA_TICKETS.set(`${kind}:${lib}`, mt)
+}
+
+export function mediaTicketFor(kind: 'proxy' | 'library', lib = ''): string {
+  return MEDIA_TICKETS.get(`${kind}:${lib}`) || ''
+}
+
 /** 代理地址也要带上 base，否则桌面版会拼成 file:///api/... */
 export function proxyStream(
   url: string,
@@ -694,7 +798,9 @@ export function proxyStream(
     params.set('ua', h['User-Agent'] || h['user-agent'])
   if (Object.keys(extra).length) params.set('headers', JSON.stringify(extra))
   const ct = opts?.token ? `&ct=${encodeURIComponent(opts.token)}` : ''
-  return `${opts?.base || base()}/api/proxy/stream?${params.toString()}${ct}`
+  const mt = mediaTicketFor('proxy')
+  const mtq = mt ? `&mt=${encodeURIComponent(mt)}` : ''
+  return `${opts?.base || base()}/api/proxy/stream?${params.toString()}${ct}${mtq}`
 }
 
 /** 投屏旁路基地址 + 一次性令牌。 */
@@ -793,12 +899,17 @@ export function proxyDanmaku(
 ): string {
   const params = new URLSearchParams({ name, episode })
   const ct = opts?.token ? `&ct=${encodeURIComponent(opts.token)}` : ''
-  return `${opts?.base || base()}/api/proxy/danmaku?${params.toString()}${ct}`
+  // 弹幕 XML 由 hls.js / <track> 直接取，带不了 header：鉴权开启时用代理票
+  const mt = mediaTicketFor('proxy')
+  const m = mt ? `&mt=${encodeURIComponent(mt)}` : ''
+  return `${opts?.base || base()}/api/proxy/danmaku?${params.toString()}${ct}${m}`
 }
 
 /** 直接指定弹幕源地址（用户在弹幕搜索里手选之后用） */
 export function proxyDanmakuByUrl(url: string): string {
-  return `${base()}/api/proxy/danmaku?url=${encodeURIComponent(url)}`
+  const mt = mediaTicketFor('proxy')
+  const m = mt ? `&mt=${encodeURIComponent(mt)}` : ''
+  return `${base()}/api/proxy/danmaku?url=${encodeURIComponent(url)}${m}`
 }
 
 /**
@@ -814,6 +925,8 @@ export function proxyDanmakuByUrl(url: string): string {
 export function prefetchDanmaku(name: string, episode: string): void {
   if (!name || !episode) return
   const params = new URLSearchParams({ name, episode })
+  const mt = mediaTicketFor('proxy')
+  if (mt) params.set('mt', mt)
   void fetch(`${base()}/api/proxy/danmaku/prefetch?${params.toString()}`, {
     method: 'POST',
   }).catch(() => {})
@@ -873,7 +986,10 @@ export async function searchDanmaku(
  */
 export function proxyImage(url?: string): string {
   if (!url) return ''
-  return `${base()}/api/proxy/image?url=${encodeURIComponent(url)}`
+  // <img> 带不了 header：开启鉴权时靠短时票 mt（与视频同一个代理票）
+  const mt = mediaTicketFor('proxy')
+  const m = mt ? `&mt=${encodeURIComponent(mt)}` : ''
+  return `${base()}/api/proxy/image?url=${encodeURIComponent(url)}${m}`
 }
 
 // ---------------------------------------------------------------- policy / dns

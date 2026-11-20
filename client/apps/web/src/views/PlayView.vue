@@ -24,6 +24,8 @@ import {
   waitTranscode,
 } from '@/api/library'
 import { skipWindowFrom, startAtFrom, subTracksFrom } from '@/api/playExtras'
+import { ensureLibraryTicket, ensureProxyTicket } from '@/api/mediaTicket'
+import { authRequired } from '@/stores/auth'
 import { hasNativePlayer, openNative } from '@/api/nativeBridge'
 import { meowDiagnose } from '@/ai/tools'
 import { explainDiagnosis } from '@/ai/llm'
@@ -554,6 +556,12 @@ async function load() {
   hopError.value = ''
   errorSource.value = 'fetch'
   loadingText.value = '正在获取播放地址…'
+  // 媒体票：鉴权开启时 <video>/hls.js 的地址必须带 ?mt=。
+  // 未开鉴权的部署不请求（端点会 401，纯噪音）。
+  if (authRequired.value) {
+    if (isLibraryPlay.value && libraryLib.value) await ensureLibraryTicket(libraryLib.value)
+    else await ensureProxyTicket()
+  }
   // 换线路/换集都是新的尝试，允许原生再兜一次
   nativeTried = false
   // 片库直链：没有 spider 的 play 可调，地址已经在 query 里。

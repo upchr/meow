@@ -46,7 +46,9 @@ server {
     # HTML 去 JSON.parse 直接失败，表现为「TV 填了地址什么都不加载」。
     # 用精确匹配而不是前缀：/config 是前端自己的路由，不能被这里吃掉。
     location = /config.json {
-        proxy_pass $meow_backend/config.json;
+        # ★ 必须显式带 query：proxy_pass 里写了 URI 时 nginx 不会自动转发
+        # 原参数，而 configKey 鉴权就靠 ?key=（实测丢参数 → 正确的 key 也 403）
+        proxy_pass $meow_backend/config.json$is_args$args;
         proxy_http_version 1.1;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -56,7 +58,7 @@ server {
     }
 
     location = /spider-latest.jar {
-        proxy_pass $meow_backend/spider-latest.jar;
+        proxy_pass $meow_backend/spider-latest.jar$is_args$args;
         proxy_http_version 1.1;
         # 后端按 Host 生成配置里的 jar 绝对地址，丢端口会让 TV 下载打到 80
         proxy_set_header Host $http_host;

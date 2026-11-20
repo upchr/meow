@@ -545,6 +545,24 @@ public class TvBridge {
         return "{\"ok\":true,\"api\":" + q(u) + ",\"config\":" + q(c) + "}";
     }
 
+    /**
+     * 保存/清除设备令牌（auth v2）。
+     *
+     * <p>前端 localStorage 之外再存一份 prefs：重装 APK 后 localStorage 在
+     * 部分 ROM / 模拟器上会被清空（实测 MuMu Android 15），壳在 onPageFinished
+     * 用它补回 localStorage（见 {@link MainActivity#restoreAuthToken}）。
+     * 传空串 = 删除（退出登录必须调它，否则下次启动又被补回去）。
+     */
+    @JavascriptInterface
+    public void saveAuthToken(String token) {
+        if (!trustedOrigin()) return;
+        String t = token == null ? "" : token.trim();
+        android.content.SharedPreferences sp =
+                activity.getSharedPreferences(MainActivity.PREF, android.content.Context.MODE_PRIVATE);
+        if (t.isEmpty()) sp.edit().remove(MainActivity.K_AUTH).apply();
+        else sp.edit().putString(MainActivity.K_AUTH, t).apply();
+    }
+
     /** 扫描是否还在跑。 */
     @JavascriptInterface
     public boolean scanRunning() {

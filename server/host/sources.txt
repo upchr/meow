@@ -68,6 +68,7 @@ server/host/src/com/github/catvod/net/SSLCompat.java
 server/host/src/com/github/catvod/utils/Util.java
 server/host/src/jvm/JvmHttpServer.java
 server/host/src/shared/ApiServer.java
+server/host/src/shared/core/Auth.java
 server/host/src/shared/core/Cast.java
 server/host/src/shared/core/CastLan.java
 server/host/src/shared/core/CastReceiver.java

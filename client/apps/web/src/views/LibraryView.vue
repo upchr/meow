@@ -52,6 +52,8 @@ import {
   type LibraryOverview,
   type TitleGroup,
 } from '@/api/library'
+import { ensureLibraryTicket } from '@/api/mediaTicket'
+import { authRequired } from '@/stores/auth'
 import { useReturnRestore } from '@/composables/useReturnRestore'
 import { confirmDialog } from '@/composables/useConfirm'
 
@@ -111,6 +113,16 @@ const autoEntered = ref(false)
 const currentLib = computed(() => trail.value[trail.value.length - 1]?.lib || '')
 const currentPath = computed(() => trail.value[trail.value.length - 1]?.path || '')
 const currentName = computed(() => trail.value[trail.value.length - 1]?.name || '')
+
+// 下载走同步 a.click()（await 会丢用户手势、被浏览器拦掉），
+// 所以票必须提前取好：进库/换库时就预取一次（auth v2，未开鉴权时静默失败）。
+watch(
+  currentLib,
+  (lib) => {
+    if (lib && authRequired.value) void ensureLibraryTicket(lib)
+  },
+  { immediate: true },
+)
 
 /** 与首页同一套列数规则，卡片宽度才不会在两个页面间跳变 */
 const { cols } = useCardCols({ maxWidth: 1400 })
@@ -1001,7 +1013,9 @@ function absoluteApiUrl(p: string): string {
   return b ? b.replace(/\/$/, '') + p : p
 }
 
-function play(filePath: string) {
+async function play(filePath: string) {
+  // 媒体票（auth v2）：片库直链同样要靠 ?mt= 放行（<video> 带不了 header）。
+  if (authRequired.value) await ensureLibraryTicket(currentLib.value)
   const u = playUrl(filePath)
   // 交给播放页：片库地址是 http(s)，但**不能**让它被包成 /api/proxy/stream
   // （那个端点拒绝回环、且只认任意 URL）。播放页按 query 里的 library 标记分流。

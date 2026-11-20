@@ -83,6 +83,22 @@ public final class LibraryRoutes {
         String pass = req.optString("pass", "");
         String payload = req.optString("body", "");
 
+        /*
+         * 公网加固（2026-11-19）：WebDAV 目标必须过 SSRF 校验，方法也要收窄。
+         * method 藏在 body 里，GET 请求也能触发任意方法；不校验等于一条任意
+         * 方法的 SSRF 隧道。宽松档允许局域网（自建 NAS 是真实场景），
+         * 回环/链路本地（云元数据）仍拒绝。
+         */
+        if (!java.util.Set.of("GET", "PUT", "DELETE", "MKCOL", "PROPFIND", "MOVE")
+                .contains(method)) {
+            Api.sendJson(ex, 405, "{\"code\":-1,\"msg\":\"method not allowed\"}");
+            return;
+        }
+        if (!core.UrlSafety.isSafeMediaUrl(url)) {
+            Api.sendJson(ex, 403, "{\"code\":-1,\"msg\":\"url not allowed\"}");
+            return;
+        }
+
         // 必须用 OkHttp：HttpURLConnection 的 setRequestMethod 只允许
         // GET/POST/HEAD/OPTIONS/PUT/DELETE/TRACE，发 PROPFIND/MKCOL 会直接抛
         // ProtocolException: Invalid HTTP method，WebDAV 根本走不通。

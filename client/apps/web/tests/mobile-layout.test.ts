@@ -164,7 +164,8 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
     expect(app).toContain(
       "const isPlay = computed(() => route.name === 'play' || route.name === 'extPlay')",
     )
-    expect(app).toContain('const showTabBar = computed(() => !isPlay.value)')
+    // 2026-11-19：登录页同样不显示底栏（公网部署，未登录时没有任何导航）
+    expect(app).toContain('const showTabBar = computed(() => !isPlay.value && !isLogin.value)')
     expect(tokens).toContain('--tabbar-h: calc(6rem + env(safe-area-inset-bottom))')
     // 满屏画面（直播）只让开标签栏本体，不需要 6rem
     expect(tokens).toContain('--tabbar-clear')

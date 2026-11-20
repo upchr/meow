@@ -390,6 +390,23 @@
       }
       return
     }
+    /*
+     * ★ 常驻型面板不参与空闲自动关闭。
+     *
+     * 踩过（2026-11-20 用户反馈「账号与安全弹框里方向键支持受限」）：账号弹框
+     * 里有设备清单、配对码这类要停下来看的内容；盯着屏幕超过 20 秒，弹框就被
+     * 这里的定时器派发 Escape 收掉 —— 他按下方向键时弹框刚好消失，看起来像
+     * "方向键把弹框按没了"。设置面板的语义是"看完自己按返回"，不是"临时弹一下"。
+     *
+     * 约定：组件在 `[data-tv-scope]` 同一元素上标 `data-tv-idle-keep` 即豁免。
+     */
+    if (scope.getAttribute('data-tv-idle-keep') !== null) {
+      if (scopeIdleTimer) {
+        clearTimeout(scopeIdleTimer)
+        scopeIdleTimer = 0
+      }
+      return
+    }
     if (scopeIdleTimer) clearTimeout(scopeIdleTimer)
     scopeIdleTimer = setTimeout(function () {
       scopeIdleTimer = 0
@@ -557,6 +574,19 @@
   }
 
   function highlight(el) {
+    /*
+     * ★ 焦点框不能只靠注入的 <style>。
+     *
+     * 踩过（2026-11-20 MuMu .77，computedStyle 诊断）：页面 reload 之后
+     * `document.getElementById('meow-tv-focus-style')` 在新 document 里查不到
+     * （旧闭包的 installStyle 加到了已销毁的 head），于是 class 明明加上了，
+     * `outlineWidth=0 / boxShadow=none` —— 屏幕上没有任何焦点框。
+     * 输入框更明显：Tailwind 的 `outline-none` 把原生 focus ring 也关了，
+     * 用户看到的就是"弹框里方向键不知道选到哪"。
+     *
+     * installStyle 是幂等的，这里每次移动焦点都补一次，代价可忽略。
+     */
+    if (!document.getElementById('meow-tv-focus-style')) installStyle()
     var all = items()
     /*
      * ★ 清旧标记必须扫全文档，不能只遍历 all。
@@ -568,9 +598,49 @@
      * querySelector('.meow-tv-focus') 永远先返回背景那一个。
      */
     var stale = document.querySelectorAll('.meow-tv-focus')
-    for (var s = 0; s < stale.length; s++) stale[s].classList.remove('meow-tv-focus')
+    for (var s = 0; s < stale.length; s++) {
+      stale[s].classList.remove('meow-tv-focus')
+      // 一并清掉内联兜底（见下），否则旧输入框会一直留着光圈
+      if (stale[s].style) stale[s].style.removeProperty('box-shadow')
+    }
     if (!el) return
     el.classList.add('meow-tv-focus')
+    /*
+     * 输入框/下拉框额外给内联 outline。
+     *
+     * ★ 为什么 box-shadow 不行（2026-11-20 实测）：样式里给 `.meow-tv-focus`
+     *   画的是 box-shadow（inset 白 + inset accent + 外发光）。同一条规则在
+     *   <button> 上正常，在 <input> 上**完全不渲染**（class 在、computedStyle
+     *   的 boxShadow 仍是 none）。这是 WebView 对表单控件绘制的差异，不是
+     *   选择器或优先级问题。outline 画在边框外沿，绕过这一层，稳定可见。
+     *   内联而不是加 CSS 规则：<style> 在某些 reload 场景会整体丢失（上一条
+     *   注释），内联样式跟着元素走，不会丢。
+     */
+    /*
+     * 输入框/下拉框额外给内联焦点环 —— 值**逐字复制**基础 `.meow-tv-focus`
+     * 规则（搜索框用的就是它），视觉上完全一致。
+     *
+     * ★ 为什么不能只靠样式表：弹层里的 `[data-tv-scope] .meow-tv-focus`
+     *   规则在这里不生效（2026-11-20 实测 class 在、computed boxShadow=none），
+     *   之前用内联 outline 兜底，但 outline 不跟圆角、只有单色 —— 用户对比
+     *   搜索框后反馈「输入框样式不对」（截图里是方角粗环）。
+     *   box-shadow 跟随 border-radius，双层（白内 + 青外 + 辉光）才是搜索框
+     *   那个观感。
+     *
+     * ★ inline 必须 `!important`：FOCUS_CSS 里 `.meow-tv-focus` 是
+     *   `box-shadow:…!important`，样式表的 !important 只有 inline !important
+     *   能压过（同权重下 inline 赢）。
+     */
+    var tagName = el.tagName ? el.tagName.toLowerCase() : ''
+    if (el.style && (tagName === 'input' || tagName === 'select' || tagName === 'textarea')) {
+      el.style.setProperty(
+        'box-shadow',
+        'inset 0 0 0 1px rgba(255,255,255,.65),' +
+          ' 0 0 0 2px #03dac5,' +
+          ' 0 0 12px 2px #03dac5',
+        'important',
+      )
+    }
     lastFocused = el
     scrollIntoViewWithin(el)
     current = all.indexOf(el)

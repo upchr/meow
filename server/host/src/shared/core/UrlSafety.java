@@ -121,19 +121,31 @@ public final class UrlSafety {
      * 宽松档：允许局域网，仍拒绝回环/链路本地/本机任意地址。
      *
      * <p>用于媒体流与图片——它们的合法来源可能就在用户的 NAS 上。
+     *
+     * <p><b>回环默认拒绝</b>（SSRF 面）。但"同机另一个服务提供片源"
+     * （例如 NAS 上 127.0.0.1:8080 的本地图床/转码服务）是真实场景，
+     * 设 {@code MEOW_ALLOW_LOOPBACK_MEDIA=1} 可放行回环；链路本地
+     * （含 169.254.169.254 云元数据）无论如何都拒绝。
      */
     public static boolean isSafeMediaUrl(String url) {
         String[] parts = schemeAndHost(url);
         if (parts == null) return false;
         InetAddress[] addrs = resolveAll(parts[1]);
         if (addrs.length == 0) return false;
+        boolean allowLoopback = envBool("MEOW_ALLOW_LOOPBACK_MEDIA");
         for (InetAddress address : addrs) {
-            if (address.isAnyLocalAddress() || address.isLoopbackAddress()
-                    || address.isLinkLocalAddress()) {
-                return false;
-            }
+            if (address.isAnyLocalAddress() || address.isLinkLocalAddress()) return false;
+            if (address.isLoopbackAddress() && !allowLoopback) return false;
         }
         return true;
+    }
+
+    /** 环境变量布尔开关（"1" / "true"，忽略大小写与首尾空白）。 */
+    private static boolean envBool(String key) {
+        String v = System.getenv(key);
+        if (v == null) return false;
+        String s = v.trim();
+        return "1".equals(s) || "true".equalsIgnoreCase(s);
     }
 
     /**

@@ -55,6 +55,8 @@ import {
 import { getPrefs, getWebdav, savePrefs, saveWebdav, type Prefs } from './stores/prefs'
 import { resetHealth } from './api/health'
 import { setBackupUpdateSource, setUpdateSource, setUpdateToken } from './api/appUpdate'
+import { refreshAuth } from './stores/auth'
+import { ensureProxyTicket, refreshMediaTickets } from './api/mediaTicket'
 
 // TV 壳靠 UA 标记识别；PC 浏览器想模拟电视布局用 `?tv=1`。
 // 必须挂在业务代码之前：列数在组件挂载时就要读到这个标记。
@@ -390,8 +392,31 @@ async function bootstrap() {
     console.warn('[boot] 老内核探测失败，按新内核处理:', e)
   }
   installDesktopPrefsBridge()
+  // 鉴权状态必须先拿到再挂载：否则首帧会先渲染出首页（发一堆必然 401 的请求）
+  // 再被守卫弹回登录页，观感是"闪一下又跳走"。
+  // 后端不可达时最多等 3 秒 —— 局域网没开鉴权的部署不该被这一步拖住启动。
+  await Promise.race([
+    refreshAuth(),
+    new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+  ])
   createApp(App).use(createPinia()).use(router).mount('#app')
   startBackgroundJobs()
+  /*
+   * 切回前台补刷媒体票。
+   *
+   * 后端重启（升级/Docker 重建/NAS 重启）会作废所有票，而客户端缓存 15 分钟
+   * —— 那段时间里海报 401 显示「点击重试」、弹幕空白，用户以为是网络问题。
+   * 契约里票 30 分钟有效，这里只在距上次补刷超过 10 分钟时做一次，
+   * 频繁切前台不会反复打接口。取票失败（未开鉴权）由 mediaTicket 内部抑制。
+   */
+  let lastTicketKick = 0
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (Date.now() - lastTicketKick < 10 * 60 * 1000) return
+    lastTicketKick = Date.now()
+    refreshMediaTickets()
+    void ensureProxyTicket()
+  })
 }
 
 // ---------------------------------------------------------------- 桌面端偏好桥

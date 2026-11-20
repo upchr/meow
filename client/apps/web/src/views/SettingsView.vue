@@ -5,6 +5,8 @@ import TilePanel from '@/components/common/TilePanel.vue'
 import TileSelect from '@/components/common/TileSelect.vue'
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import AboutDialog from '@/components/common/AboutDialog.vue'
+import AccountDialog from '@/components/AccountDialog.vue'
+import { authMode, authRequired, refreshAuth, setDeviceToken } from '@/stores/auth'
 import { useCardCols } from '@/composables/useCardCols'
 import WallpaperPicker from '@/components/common/WallpaperPicker.vue'
 import { THEME_MODES, THEME_STYLES, resolveMode } from '@/stores/theme'
@@ -628,7 +630,10 @@ function closeConnDialog() {
 }
 
 /**
- * 写操作令牌（后端 policy.json 里设了 authToken 才需要）。
+ * 设备令牌（TV/PC 壳连接开启鉴权的后端时用）。
+ *
+ * <p>兼容旧部署：后端把 policy.json 里的 `authToken` 导入为设备令牌，
+ * 所以老用户填过的这一格不用重输。
  *
  * 存在本设备 localStorage，**不进备份也不跨端同步**——它是凭据，跟着
  * WebDAV 同步等于把钥匙放进备份文件里。
@@ -638,9 +643,9 @@ const authSaved = ref(false)
 let authSavedTimer: number | undefined
 
 function saveAuthToken() {
-  const v = authToken.value.trim()
-  if (v) localStorage.setItem('meow.authToken', v)
-  else localStorage.removeItem('meow.authToken')
+  setDeviceToken(authToken.value)
+  // 让路由守卫/令牌模式立刻按新凭据重判一次（不必刷新页面）
+  void refreshAuth()
   authSaved.value = true
   clearTimeout(authSavedTimer)
   authSavedTimer = window.setTimeout(() => (authSaved.value = false), 2000)
@@ -4334,6 +4339,14 @@ const navItems = computed(() =>
 const activeSec = ref<string>('conn')
 
 /**
+ * 账号与安全弹框（auth v2）。
+ *
+ * 只在**密码模式**的部署给入口：改密/设备令牌/配对/configKey 都要网页会话，
+ * 纯令牌部署没有会话，点开也全是 401 —— 那种部署用连接区的「设备令牌」输入框。
+ */
+const accountOpen = ref(false)
+
+/**
  * 分区呈现：**全部立即渲染**（2026-11-13 用户口径「完全放开即可，TV 也不要」）。
  *
  * 曾经做过"到过才挂内容"的懒挂载（3e0c185）：14 个分区只挂当前一块，其余用
@@ -5043,6 +5056,16 @@ onBeforeUnmount(() => {
         <h2 class="set-title">连接</h2>
         <span class="set-hint">后端地址 · 站点概览</span>
         <span class="set-actions flex flex-wrap items-center gap-2">
+          <!-- 账号与安全入口（auth v2）：密码模式的部署才给。点开弹框，不占独立分区 ——
+               鉴权配置一年也改不了几次，常驻一个分区只会让设置页更长 -->
+          <button
+            v-if="authRequired && authMode === 'password'"
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-md bg-card px-3 py-1.5 text-xs text-ink transition hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60"
+            @click="accountOpen = true"
+          >
+            账号与安全
+          </button>
           <span
             class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px]"
             :class="store.online ? 'bg-ok/15 text-ok' : 'bg-hot/15 text-hot'"
@@ -5097,14 +5120,14 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="mt-2 flex flex-wrap items-center gap-2.5">
-        <span class="w-20 shrink-0 text-xs text-ink-3">写操作令牌</span>
+        <span class="w-20 shrink-0 text-xs text-ink-3">设备令牌</span>
         <input
           v-model="authToken"
           type="password"
           autocomplete="off"
-          placeholder="后端 policy.json 未设 authToken 时留空"
+          placeholder="连接开启鉴权的后端时填；局域网未开鉴权可留空"
           class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
-          title="对应后端数据目录 policy.json 的 authToken；只存本机，不参与跨端同步与备份"
+          title="网页版「账号与安全」里生成的设备令牌；只存本机，不参与跨端同步与备份"
           @keyup.enter="saveAuthToken"
         />
         <button
@@ -7840,6 +7863,9 @@ onBeforeUnmount(() => {
       @close="closeAbout()"
       @open-project="openProjectPage()"
     />
+
+    <!-- 账号与安全：从「连接」区按钮打开。Teleport 在组件内部（AccountDialog） -->
+    <AccountDialog v-if="accountOpen" @close="accountOpen = false" />
 
     <!-- ══════════ 站点明细弹层 ══════════
       ★ 为什么用弹框而不是原地展开。

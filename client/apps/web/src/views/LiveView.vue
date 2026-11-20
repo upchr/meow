@@ -46,6 +46,8 @@ import { useOverlayHost } from '@/composables/useOverlayHost'
 import { useRouter } from 'vue-router'
 import Hls from 'hls.js'
 import { addLiveSource, fetchLive, fetchLivePlaylist, proxyStream, type LiveChannel, type LiveGroup } from '@/api'
+import { ensureProxyTicket } from '@/api/mediaTicket'
+import { authRequired } from '@/stores/auth'
 import { isTvEnv } from '@/composables/useCardCols'
 import {
   setSystemBrightness,
@@ -2071,7 +2073,7 @@ function togglePlay() {
   wake()
 }
 
-function switchUrl(url: string) {
+async function switchUrl(url: string) {
   activeUrl.value = url
   error.value = ''
   // 起播等待态：慢源要 2–5 秒，期间必须有转圈，否则画面全黑像"点了没反应"
@@ -2085,6 +2087,9 @@ function switchUrl(url: string) {
   clearTimeout(badTimer)
   const v = video.value
   if (!v) return
+  destroyHls()
+  // 媒体票（auth v2）：鉴权开启时才需要；未开鉴权的部署不发这个必然 401 的请求
+  if (authRequired.value) await ensureProxyTicket()
   // 直播流同样要走代理：源站普遍校验 Referer，且不允许跨源拉流
   const src = proxyStream(url)
   destroyHls()

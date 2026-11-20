@@ -278,7 +278,7 @@ describe('AI 面板契约（docs/47 §三）', () => {
     expect(PANEL).toContain('hidden')
     // /ai 独立页也要藏浮层：那一页自己渲染了 inline 模式的同一组件，
     // 不藏会出现"浮层 + 页面主体"两份对话
-    expect(APP).toMatch(/<AiPanel :hidden="inFullscreen \|\| route\.name === 'ai'"/)
+    expect(APP).toMatch(/<AiPanel :hidden="inFullscreen \|\| route\.name === 'ai' \|\| isLogin"/)
     expect(APP).toContain("meow:pseudofs")
   })
 

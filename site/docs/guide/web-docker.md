@@ -89,8 +89,40 @@ docker compose up -d web                         # 只起前端，连远端后�
 
 1. 把 `APISERVER_BIND` 改成 `0.0.0.0`
 2. **同时设置 `MEOW_AUTH_TOKEN`**，否则同一网段任何人都能清空你的收藏与配置
-3. 设了令牌后，**浏览器端也要在「设置 → 连接 → 写操作令牌」填同一个值**——令牌只注入后端，web 容器不转发它，不填的话导入配置 / 收藏 / 保存设置都会 401
+3. 设了令牌后，**浏览器/TV/PC 端也要在「设置 → 连接 → 设备令牌」填同一个值**——令牌只注入后端，web 容器不转发它，不填的话导入配置 / 收藏 / 保存设置都会 401
 4. 只在可信网络里这么做，公网暴露请走反向代理 + HTTPS
+
+## 公网部署（账号登录）
+
+在公网服务器 / 公网 NAS 上，建议开启应用内账号，而不是只靠 `MEOW_AUTH_TOKEN`：
+
+```bash
+# deploy/docker/.env
+MEOW_AUTH_MODE=on
+# 想固定首启令牌就填，不填则随机生成并打印到日志
+MEOW_SETUP_TOKEN=
+# 可选来源白名单（回环永远放行）
+MEOW_ALLOW_CIDR=
+# 由 web 容器或你自己的反代终结 TLS 时置 1
+MEOW_PUBLIC_TLS=
+```
+
+1. `docker compose up -d` 后看 `docker compose logs apiserver | grep -A3 "setup"`，拿到 setup 令牌
+2. 浏览器打开 web 端口 → 输入 setup 令牌 + 管理员用户名/密码（至少 10 位）
+3. 之后 web 用账号密码登录；TV/PC 壳在「设置 → 连接 → 设备令牌」填网页「设置 → 账号与安全」里生成的令牌，或直接用 6 位配对码
+4. Fongmi/TVBox 拉 `/config.json`、`/spider-latest.jar` 时用独立 `?key=`；首启生成，密钥在「账号与安全」里可轮换
+5. **纯 HTTP 公网**：密码登录默认只在服务器本机允许（防明文过网），请用 TV/脚本的设备令牌；确实要网页密码登录就上 TLS
+
+TLS 不想加前置反代时，用内置的 TLS 覆盖文件（证书放到 `certs/`）：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+```
+
+它会额外开 443（→ 容器 8443）并把 `MEOW_PUBLIC_TLS` / `MEOW_TRUST_PROXY` 传给后端。
+证书更新后 `docker compose exec web nginx -s reload`。
+
+> 完整矩阵、安全边界与实现细节见开发文档 [公网部署](/dev/public-deployment)。
 
 ## 在 Mac 和 Linux 上
 

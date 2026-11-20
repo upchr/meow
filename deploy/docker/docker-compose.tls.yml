@@ -1,0 +1,26 @@
+# 可选覆盖：让 web 容器自己终结 TLS（不需要额外前置反代）。
+#
+#   MEOW_TLS_CERT=/path/fullchain.pem MEOW_TLS_KEY=/path/privkey.pem \
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+#
+# 生效后：
+#   443 → web:8443 (TLS) → 127.0.0.1:8080 (明文 nginx) → apiserver
+#   MEOW_PUBLIC_TLS=1 要同时给 apiserver（见 .env.example），
+#   否则后端会认为自己在 HTTP 后面：密码登录被拒、Cookie 不带 Secure。
+#
+# 证书更新：替换文件后 `docker compose ... exec web nginx -s reload`。
+services:
+  web:
+    ports:
+      - "${WEB_TLS_PORT:-443}:8443"
+    volumes:
+      - "${MEOW_TLS_CERT:-./certs/fullchain.pem}:/etc/nginx/certs/fullchain.pem:ro"
+      - "${MEOW_TLS_KEY:-./certs/privkey.pem}:/etc/nginx/certs/privkey.pem:ro"
+      - "./nginx-tls.conf.template:/etc/nginx/templates/tls.conf.template:ro"
+
+  apiserver:
+    environment:
+      # 容器内看到的是 nginx 明文 8080，但对外是 https：显式告知后端
+      MEOW_PUBLIC_TLS: "1"
+      # 只有请求确实经过本文件的 web 容器时才可信
+      MEOW_TRUST_PROXY: "1"

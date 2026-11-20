@@ -845,6 +845,14 @@ onBeforeUnmount(() => {
 const isPlay = computed(() => route.name === 'play' || route.name === 'extPlay')
 /** 直播页：与播放页同构的路由级满屏页面（顶栏不渲染、底栏不显示） */
 const isLive = computed(() => route.name === 'live')
+/**
+ * 登录页：没有任何全局导航。
+ *
+ * <p>公网部署的登录页要是还顶着站点下拉、搜索、设置和底栏，用户会以为
+ * "没登录也能用"，点进去又被守卫弹回来（2026-11-19 NAS 实测观感）。
+ * 这里按路由名隐藏，不做成"未登录就全站隐藏"——局域网部署根本没有登录页。
+ */
+const isLogin = computed(() => route.name === 'login')
 
 /*
  * 全屏播放 / 直播页强制暗色：底色是视频画面，浅色主题的浅面板压上去就是白斑。
@@ -864,7 +872,7 @@ watch(
  * 用户也回不到其它入口；直播自己的控制栏与频道面板用 --tabbar-clear 让位。
  * <p>只在 <640px 出现（组件内部 CSS 控制），桌面/电视不受影响。
  */
-const showTabBar = computed(() => !isPlay.value)
+const showTabBar = computed(() => !isPlay.value && !isLogin.value)
 
 /**
  * 是否有元素处于全屏（真全屏或伪全屏）。
@@ -1068,7 +1076,7 @@ onBeforeUnmount(() => stopDesktopShortcuts?.())
     <!-- 播放/直播页没有 AppHeader：给一个隐形拖拽条 + 悬停红黄绿 -->
     <DesktopTopChrome v-if="desktop && (isPlay || isLive)" />
 
-    <AppHeader v-if="!isPlay && !isLive" class="relative z-20" />
+    <AppHeader v-if="!isPlay && !isLive && !isLogin" class="relative z-20" />
 
     <!--
       AI 悬浮入口（docs/47 §三）。放在 App 级别而不是各页面：
@@ -1078,7 +1086,7 @@ onBeforeUnmount(() => stopDesktopShortcuts?.())
       /ai 独立页同样要隐藏：那一页自己渲染了 inline 模式的同一组件，
       不藏就会同时出现"浮层 + 页面主体"两份对话。
     -->
-    <AiPanel :hidden="inFullscreen || route.name === 'ai'" />
+    <AiPanel :hidden="inFullscreen || route.name === 'ai' || isLogin" />
 
     <!-- 菜单键上下文面板：卡片上的 hover 操作在遥控器上够不到，统一走这里 -->
     <TvActionSheet />
@@ -1090,7 +1098,7 @@ onBeforeUnmount(() => stopDesktopShortcuts?.())
       设置页都可能被通知到。播放页/直播页由 tryPromptUpdate 推迟，
       不在这两页弹（整屏是画面，模态会挡住内容）。
     -->
-    <UpdateDialog v-if="updateDialogOpen" @close="closeUpdateDialog()" />
+    <UpdateDialog v-if="updateDialogOpen && !isLogin" @close="closeUpdateDialog()" />
 
     <!-- 首次点 X 的一次性提示：Rust 的 window.__meowTrayHint 打开它 -->
     <TrayHintDialog v-if="trayHintOpen" @close="trayHintOpen = false" />

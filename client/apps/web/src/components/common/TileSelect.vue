@@ -155,12 +155,16 @@ watch(open, (v) => {
         tv-nav 的作用域机制只认 `[data-tv-scope]`，不标的话菜单打开后
         方向键会去背景的磁贴上找邻居（菜单里的选项既选不中也关不掉）。
         标上之后焦点被收窄到菜单内，上下键在选项间走、ok 选中。
+
+        ★ z-index 必须高于所有弹窗（弹窗 120 / 全屏提示 130）。
+        原来是 z-[100]，在账号与安全弹框（z-120）里点「权限」时菜单被整个
+        盖住 —— 磁贴变成打开态、菜单看不见（2026-11-20 实测截图）。
       -->
       <div
         v-if="open"
         ref="menu"
         data-tv-scope
-        class="tile-menu fixed z-[100] overflow-y-auto rounded-lg border border-line bg-elevated p-1.5 shadow-2xl"
+        class="tile-menu fixed z-[140] overflow-y-auto rounded-lg border border-line bg-elevated p-1.5 shadow-2xl"
         :style="menuStyle"
       >
         <button
