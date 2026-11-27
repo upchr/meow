@@ -114,6 +114,13 @@ struct WebView: UIViewRepresentable {
                         Notifier.shared.notify(
                             title: dict["title"] as? String ?? "喵播放器",
                             body: dict["body"] as? String ?? "")
+                    case "nativeVlc":
+                        /*
+                         * 原生兜底播放（MKV/AVI/FLV/DTS 等 web 播不了的格式）。
+                         * 与 TV 的 openNative 同构：web 侧只在 hasIosNativePlayer()
+                         * 为 true 时走这里，失败由原生回传 __meowVlcClosed 让 web 恢复。
+                         */
+                        NativeVlcPlayer.present(from: message.webView, dict: dict)
                     default:
                         break
                     }

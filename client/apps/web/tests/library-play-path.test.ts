@@ -69,7 +69,11 @@ describe('片库转码兜底：必须用 lib+path', () => {
     const code = codeOnly(PLAY)
     expect(code).toContain('async function tryLibraryTranscode')
     const i = code.indexOf('async function tryLibraryTranscode')
-    const body = code.slice(i, i + 800)
+    /*
+     * 切片要够长：函数开头的守卫 + 注释会随迭代增长（2026-11-27 加能力预检后
+     * 800 字符已经够不到 await 那行，断言变成"测试红但代码对"）。
+     */
+    const body = code.slice(i, i + 2000)
     expect(body).toContain('waitLibraryTranscode(lib, file')
   })
 

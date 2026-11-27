@@ -36,7 +36,12 @@ describe('播放页换集保持全屏', () => {
   const player = read('client/apps/web/src/components/player/VideoPlayer.vue')
 
   it('整页 loading 不能无条件显示（换集时播放器必须留在 DOM 里）', () => {
-    expect(play).toContain('v-if="loading && !src"')
+    /*
+     * 2026-11-27：iOS 原生渲染模式（native=1）下画面由端内 VLCKit 出，
+     * web 里没有 <video>，整页 loading 同样不该出现 → 条件多了
+     * !iosNativeLayer。语义没变：仍然要求「还没有可播地址」。
+     */
+    expect(play).toContain('v-if="loading && !src && !iosNativeLayer"')
     // 换集途中 play.value 可能是尚未解析的加密串；这个分支也必须只在
     // 还没有可播地址时出现，否则一样会把播放器卸载。
     expect(play).toContain('v-else-if="needsParser && !src"')

@@ -230,6 +230,30 @@ jobs:
         if: steps.pypayload.outputs.cache-hit != 'true'
         run: bash client/apps/ios/scripts/prepare-python-payload.sh
 
+      # 端内 VLCKit（MobileVLCKit 3.7.5）：web 播不了 MKV/AVI/FLV/DTS 时的
+      # 原生兜底。tar.xz 约 230MB、解压后只留 arm64 真机 slice；缓存整包，
+      # 否则每次 CI 都要重下 230MB。
+      - name: Cache VLCKit
+        id: vlckit
+        uses: actions/cache@v4
+        with:
+          path: |
+            client/apps/ios/build/vlckit-cache
+            client/apps/ios/build/vlckit
+          key: ios-vlckit-3.7.5-${{ hashFiles('client/apps/ios/scripts/prepare-vlckit.sh') }}
+
+      - name: Prepare VLCKit
+        if: steps.vlckit.outputs.cache-hit != 'true'
+        run: bash client/apps/ios/scripts/prepare-vlckit.sh
+
+      - name: Verify VLCKit staged
+        run: |
+          set -euo pipefail
+          BIN=client/apps/ios/build/vlckit/MobileVLCKit.framework/MobileVLCKit
+          test -f "$BIN" || { echo "MobileVLCKit.framework missing"; exit 1; }
+          lipo -info "$BIN"
+          du -sh client/apps/ios/build/vlckit/MobileVLCKit.framework
+
       - name: Verify CPython staged
         run: |
           set -euo pipefail

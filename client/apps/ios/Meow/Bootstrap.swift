@@ -219,6 +219,16 @@ final class Bootstrap: ObservableObject {
                   + "apiBase:'\(Self.jsString(base))',"
                   + "runtime:'OpenJDK 9 Zero（静态链接 · -Xint）'}")
         /*
+         * 原生兜底播放桥（2026-11-27）：web 的 <video> 播不了 MKV/AVI/FLV/DTS
+         * 时交给端内 VLCKit。`nativeVlc` 是**同步的 feature detect** ——
+         * postMessage 是单向异步，拿不到返回值，所以能力探测必须靠注入的字段：
+         * 老壳没有它 → 前端 hasIosNativePlayer() 为 false → 退回原来的提示。
+         */
+        js.append("window.meowIos.nativeVlc=true")
+        js.append("window.meowIos.openNativeVlc=function(o){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage(Object.assign({op:'nativeVlc'},o||{}))"
+                  + "}catch(e){return false}return true}")
+        /*
          * 转屏桥：播放页全屏要横屏。WKWebView 里没有 Screen Orientation API 的
          * lock（非全屏上下文一律拒绝），只能让原生转；前端 shellSetOrientation
          * 会同时试 meowTv / meowIos 两个桥。

@@ -68,6 +68,13 @@ targets:
       - framework: build/python/Python.framework
         embed: true
         codeSign: false
+      # 端内 VLCKit（MobileVLCKit 3.7.5，LGPLv2.1，动态库）。web 的 <video>
+      # 播不了 MKV/AVI/FLV/DTS/10-bit 时的原生兜底，与 TV 的 openNative 同构。
+      # iOS 不能 fork/exec，服务端 ffmpeg 那条路不存在 —— 这是唯一的端内解法。
+      # 备料：scripts/prepare-vlckit.sh（只留 arm64 真机 slice）。
+      - framework: build/vlckit/MobileVLCKit.framework
+        embed: true
+        codeSign: false
     # F 变体：静态链接 + -no_pie。
     # 依据：E 的 .ips 崩在 OpenJDK 的 logging 全局构造器（LogTagSet ->
     # MemTracker -> NativeCallStack），写入 __LINKEDIT 只读页 —— 典型的
