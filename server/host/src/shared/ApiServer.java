@@ -1640,6 +1640,16 @@ public class ApiServer {
              * 必须显式注册：否则会被下面的站点分派当成 site="runtime"。
              */
             if ("/api/runtime/status".equals(path)) {
+                /*
+                 * `?probe=1`：跳过 15 秒探活缓存，强制重探（不动熔断计数）。
+                 *
+                 * 为什么需要（2026-11-27 真机）：iOS 切后台时 node 的监听会被
+                 * 系统回收，缓存里很可能留着挂起期间测出来的 false —— 切回端内
+                 * 后端后设置页一直显示「Node 不可用」，点「重新检测」拿到的还是
+                 * 同一个假值。设置页是低频入口，多探一次不值得省。
+                 */
+                String q = ex.getRequestURI().getRawQuery();
+                if (q != null && q.contains("probe=1")) rtProbeAt.set(0L);
                 sendJson(ex, 200, runtimeStatusJson());
                 return;
             }

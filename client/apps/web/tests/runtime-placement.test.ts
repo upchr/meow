@@ -48,6 +48,14 @@ describe('导入：.py 站点保留', () => {
     expect(api).toContain('"/api/runtime/status".equals(path)')
     expect(api).toContain('private static String runtimeStatusJson()')
   })
+
+  it('运行时状态可强制重探（iOS 切回端内后端时探活缓存是假值）', () => {
+    // 探活结果缓存 15 秒：iOS 切后台期间 node 监听被回收，缓存里留着 false
+    expect(api).toContain('probe=1')
+    expect(api).toContain('rtProbeAt.set(0L)')
+    // 面板必须带这个参数，否则「重新检测」拿到的还是同一个假值
+    expect(panel).toContain('/api/runtime/status?probe=1')
+  })
 })
 
 describe('运行时状态放在哪', () => {

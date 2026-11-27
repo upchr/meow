@@ -326,6 +326,53 @@ enum NodeBridge {
         }
     }
 
+    /// 短探活：`GET 127.0.0.1:<port>/health` 返回 200 才算活着。
+    ///
+    /// 只用于「切换后端 / 回前台」这种低频对齐，别放进请求热路径。
+    static func endoRuntimeAlive(port: Int, timeout: TimeInterval = 1.2) -> Bool {
+        guard let u = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
+        var req = URLRequest(url: u)
+        req.timeoutInterval = timeout
+        var ok = false
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { _, resp, _ in
+            if let http = resp as? HTTPURLResponse { ok = http.statusCode == 200 }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + timeout + 1)
+        return ok
+    }
+
+    /// 按**真实探测结果**对齐 `policy.jsRuntime`（只动 loopback，自定义地址保留）。
+    ///
+    /// <p>为什么要它（2026-11-27 真机）：iOS 挂起会回收 node 的监听 socket，
+    /// 而 policy 里的 `jsRuntime` 不会跟着失效 —— 切回端内后端后设置页显示
+    /// 「Node 不可用 / CPython 未启用」，`.js` 源还会先等满 8 秒超时。
+    /// 这里按活体重写：pyrt 活着用 19331（它转发 .js），否则 drpy 19330；
+    /// 都不活就保持原值（下次冷启动会重写），只留日志便于排障。
+    ///
+    /// - Parameter waitSeconds: 给刚被系统挂起唤醒的 drpy 一点复活时间（0 = 只探一次）
+    static func alignJsRuntime(waitSeconds: TimeInterval = 0) {
+        DispatchQueue.global(qos: .utility).async {
+            let deadline = Date().addingTimeInterval(max(0, waitSeconds))
+            var drpy = endoRuntimeAlive(port: drpyPort)
+            while !drpy && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.5)
+                drpy = endoRuntimeAlive(port: drpyPort)
+            }
+            let py = endoRuntimeAlive(port: PythonRuntime.port)
+            if py {
+                LaunchLog.write("[node] align: jsRuntime -> pyrt (drpy=\(drpy))")
+                writeJsRuntime(url: "http://127.0.0.1:\(PythonRuntime.port)")
+            } else if drpy {
+                LaunchLog.write("[node] align: jsRuntime -> drpy")
+                writeJsRuntime(url: "http://127.0.0.1:\(drpyPort)")
+            } else {
+                LaunchLog.write("[node] align: no endo runtime alive; keep policy")
+            }
+        }
+    }
+
     private static func version(at dir: URL) -> String {
         let f = dir.appendingPathComponent(".payload-version")
         let text = (try? String(contentsOf: f, encoding: .utf8)) ?? ""

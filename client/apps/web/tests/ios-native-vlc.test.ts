@@ -31,6 +31,7 @@ const SETTINGS = read(ROOT, 'client', 'apps', 'web', 'src', 'views', 'SettingsVi
 const DANMAKU = read(IOS, 'Meow', 'VlcDanmakuOverlay.swift')
 const WEBVIEW = read(IOS, 'Meow', 'WebView.swift')
 const BOOTSTRAP = read(IOS, 'Meow', 'Bootstrap.swift')
+const NODEBRIDGE = read(IOS, 'Meow', 'NodeBridge.swift')
 const BRIDGE = read(ROOT, 'client', 'apps', 'web', 'src', 'api', 'nativeBridge.ts')
 const PLAY = read(ROOT, 'client', 'apps', 'web', 'src', 'views', 'PlayView.vue')
 // 控制层不再是独立组件：复用 VideoPlayer 本体（2016-11 后唯一的播放器 UI）
@@ -492,8 +493,27 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(BOOT).toContain('static func reloadWebWithCurrentBackend()')
     expect(BOOT).toContain('removeAllUserScripts()')
     expect(BOOT).toContain('makeBootScript(base: base, site: launchSite)')
-    expect(WEBVIEW).toMatch(/BackendOverride\.set\([\s\S]{0,240}reloadWebWithCurrentBackend/)
+    expect(WEBVIEW).toMatch(/BackendOverride\.set\([\s\S]{0,600}reloadWebWithCurrentBackend/)
     expect(SETTINGS).toContain('window.setTimeout(() => location.reload(), 1500)')
+  })
+
+  it('切回端内后端：先把端内运行时拉齐再重载（Node 不可用 / CPython 未启用）', () => {
+    /*
+     * 2026-11-27 真机：点「恢复端内后端」后地址回去了，但「运行时」分区显示
+     * Node 不可用、CPython 未启用（= 端内 policy 里的 jsRuntime 指向一个死地址：
+     * iOS 挂起会回收 node 的监听，而 policy 不会自己失效；宿主探活还有 15 秒缓存）。
+     * 处置：切回端内时先探活 + 重写 jsRuntime（pyrt 活着用 19331，否则 drpy 19330），
+     * 回前台也再对齐一次；面板用 ?probe=1 强制重探，避免拿到挂起期间的假值。
+     */
+    expect(BOOT).toContain('static func restoreEmbeddedRuntimeThenReload()')
+    expect(BOOT).toContain('NodeBridge.alignJsRuntime(waitSeconds: 6)')
+    expect(BOOT).toContain('PythonRuntime.ensureRunning()')
+    expect(NODEBRIDGE).toContain('static func alignJsRuntime(waitSeconds: TimeInterval = 0)')
+    expect(NODEBRIDGE).toContain('static func endoRuntimeAlive(port: Int')
+    expect(NODEBRIDGE).toContain('writeJsRuntime(url: "http://127.0.0.1:\\(PythonRuntime.port)")')
+    expect(WEBVIEW).toContain('Bootstrap.restoreEmbeddedRuntimeThenReload()')
+    // 切回端内要等对齐完成（最多 6 秒），兜底刷新不能太早
+    expect(SETTINGS).toContain('window.setTimeout(() => location.reload(), 8000)')
   })
 
   it('字幕：随 meta/open 交给 VLC（:sub-file），不依赖运行期 slave API', () => {

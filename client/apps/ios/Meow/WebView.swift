@@ -117,9 +117,19 @@ struct WebView: UIViewRepresentable {
                          * 重跑启动时注册的旧脚本，注入的 apiBase 还是旧值 ——
                          * 表现就是「地址刚填上又刷回 127.0.0.1:9978」。
                          * 非法协议（非 http(s)）不重载，保持当前后端不动。
+                         *
+                         * 空值 = 切回端内：端内 node 的监听可能已被系统回收，
+                         * 先把运行时拉齐（对齐 policy.jsRuntime）再重载，否则
+                         * 设置页会一直显示「Node 不可用 / CPython 未启用」。
                          */
-                        if BackendOverride.set(dict["value"] as? String ?? "") {
-                            Task { @MainActor in Bootstrap.reloadWebWithCurrentBackend() }
+                        let target = dict["value"] as? String ?? ""
+                        if BackendOverride.set(target) {
+                            if target.isEmpty {
+                                // 端内对齐要探活（最多 6 秒），不能阻塞消息线程
+                                Task { @MainActor in Bootstrap.restoreEmbeddedRuntimeThenReload() }
+                            } else {
+                                Task { @MainActor in Bootstrap.reloadWebWithCurrentBackend() }
+                            }
                         }
                     case "notify":
                         Notifier.shared.notify(

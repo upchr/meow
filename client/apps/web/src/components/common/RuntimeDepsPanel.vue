@@ -176,8 +176,13 @@ async function refresh(): Promise<void> {
           rssMB?: number
           memAvailMB?: number
         }>('/api/health', { timeout: 8000 }).catch(() => null),
+        /*
+         * `?probe=1`：让宿主跳过 15 秒探活缓存（2026-11-27 真机）。
+         * iOS 切后台时 node 监听会被系统回收，缓存里可能留着那期间测出的 false；
+         * 不加这个参数，切回端内后端后本面板和「重新检测」都会一直显示不可用。
+         */
         request<{ url?: string; ok?: boolean; py?: string; breaker?: string }>(
-          '/api/runtime/status',
+          '/api/runtime/status?probe=1',
           { timeout: 8000 },
         ).catch(() => null),
       ])
@@ -278,6 +283,18 @@ onBeforeUnmount(() => {
       <p class="ml-3.5 mt-0.5 break-all text-[length:var(--fs-mini)] text-ink-3">
         端内 nodejs-mobile（V8 关闭 JIT）；地址
         <code class="select-all">{{ iosInfo.url || '未配置' }}</code>
+      </p>
+      <!--
+        端内运行时没响应时的处置说明（2026-11-27 用户实测）。
+        node 跟 App 同进程、node_start 只能调一次 —— 切后台被系统回收后
+        没有"重启运行时"这条路，只能重开 App；不写清楚用户会以为是配置坏了。
+      -->
+      <p
+        v-if="!iosJsOk && /^http:\/\/127\.0\.0\.1:1933\d$/.test(iosInfo.url)"
+        class="ml-3.5 mt-1 rounded-md bg-field px-2.5 py-1.5 text-[length:var(--fs-mini)] leading-relaxed text-ink-3"
+      >
+        端内 Node 没有响应（iOS 切后台可能回收了它的监听）。先点右上「重新检测」；
+        仍不可用时重启 App —— 它和 App 同进程，一次启动只能拉起一次。
       </p>
 
       <div class="mt-2 flex flex-wrap items-baseline gap-x-2">

@@ -496,7 +496,12 @@ function restoreEmbeddedBackend() {
   }).meowIos?.setApiBackend
   if (typeof apply !== 'function') return
   apply('')
-  window.setTimeout(() => location.reload(), 1500)
+  /*
+   * 兜底给 8 秒（切外部只有 1.5 秒）：壳收到空值后要先探活并重写
+   * `policy.jsRuntime`（最多等 drpy 6 秒），再重载。兜底太早会在对齐完成前
+   * 用旧脚本刷新，页面短暂连回外部后端。
+   */
+  window.setTimeout(() => location.reload(), 8000)
 }
 
 /** 恢复"由插件托管"：清掉手填地址，重启后重新问插件要端口 */

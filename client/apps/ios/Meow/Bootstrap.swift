@@ -196,6 +196,12 @@ final class Bootstrap: ObservableObject {
         // node 的监听 socket 也会被挂起回收：探活失败就摘掉 danmaku-host.txt，
         // 让后端回退内置弹幕源（见 NodeBridge.ensureServing 的注释）。
         NodeBridge.ensureServing()
+        /*
+         * 回前台再对齐一次 `policy.jsRuntime`（2026-11-27 真机）：
+         * 挂起会回收 node 的监听，policy 里的地址不会自己失效 —— 不对齐的话
+         * `.js` 源会一直打一个死端口（每源等满 8 秒），设置页也显示「Node 不可用」。
+         */
+        NodeBridge.alignJsRuntime()
         // pyrt 同理：挂起会回收监听 socket/线程，探活失败就在已初始化的
         // 解释器里重跑 pyrt.py；配置里没有 .py 站点时这里直接返回。
         #if !targetEnvironment(simulator)
@@ -258,6 +264,33 @@ final class Bootstrap: ObservableObject {
                                       forMainFrameOnly: false))
         LaunchLog.write("backend reload: base=\(base.isEmpty ? "none" : base)")
         wv.reload()
+    }
+
+    /**
+     * 切回端内后端：**先把端内运行时拉齐，再重载页面**。
+
+     * <p>为什么不能直接 reload（2026-11-27 真机）：node 跑在 App 进程里、
+     * `node_start` 只能调一次；iOS 挂起会回收它的监听。切回端内后如果不管，
+     * `policy.jsRuntime` 还是死地址 —— 设置页显示「Node 不可用 / CPython 未启用」，
+     * `.js` 源每源等满 8 秒。
+     *
+     * <p>这里做三件事（都是幂等/带探活）：
+     *   1. `startIfPossible()`：node 没起过就起（起过的这里什么都不做）；
+     *   2. `PythonRuntime.ensureRunning()`：有 .py 站点且 pyrt 死了，在已初始化的
+     *      解释器里重跑 pyrt.py（这条能真正救回 CPython）；
+     *   3. `alignJsRuntime(waitSeconds: 6)`：给刚唤醒的 drpy 最多 6 秒复活时间，
+     *      然后按真实活体重写 `jsRuntime`。
+     * 对齐完成后再 reload，页面首次查询就会拿到（`?probe=1` 强制重探的）真实状态。
+     */
+    static func restoreEmbeddedRuntimeThenReload() {
+        DispatchQueue.global(qos: .utility).async {
+            NodeBridge.startIfPossible()
+            #if !targetEnvironment(simulator)
+            PythonRuntime.ensureRunning()
+            #endif
+            NodeBridge.alignJsRuntime(waitSeconds: 6)
+            Task { @MainActor in reloadWebWithCurrentBackend() }
+        }
     }
 
     private static func makeBootScript(base: String, site: String) -> String {
