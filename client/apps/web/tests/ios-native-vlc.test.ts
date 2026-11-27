@@ -85,7 +85,7 @@ describe('原生播放器：入口 / 收尾 / 方向', () => {
   })
 })
 
-describe('原生弹幕：参数与 TV 逐项对齐', () => {
+describe('原生弹幕：参数与 TV / 网页渲染器对齐', () => {
   it('常量一致（静态 4s / 追赶窗 1.2s / 车道间隔 350ms / seek 阈值 2.5s）', () => {
     expect(DANMAKU).toContain('STATIC_MS: Int = 4_000')
     expect(DANMAKU).toContain('SPAWN_WINDOW_MS: Int = 1_200')
@@ -93,9 +93,19 @@ describe('原生弹幕：参数与 TV 逐项对齐', () => {
     expect(DANMAKU).toContain('SEEK_JUMP_MS: Int = 2_500')
   })
 
-  it('字号/车道/区域按 TV 的公式算（h/32*scale、h*area/laneH）', () => {
-    expect(DANMAKU).toContain('h / 32 * scale')
+  it('字号/车道与网页 DanmakuRenderer 同一套公式（22pt × 补偿，车道 = 字号+10）', () => {
+    /*
+     * 2026-11-27 用户实报"点播页弹幕很高、片库这个就很低"：
+     * 旧公式 h/32 + 车道×1.5 + 预留顶底各 2 行 → 片库只剩 6 行、占屏不到一半。
+     * 现在与 danmaku.ts 的 fontSize/laneHeight/lanes 完全一致。
+     */
+    expect(DANMAKU).toContain('22 * scale * narrow * short')
+    expect(DANMAKU).toContain('min(40, max(12,')
+    expect(DANMAKU).toContain('laneH = textSize.rounded(.up) + 10')
     expect(DANMAKU).toContain('Int(h * areaRatio / laneH)')
+    // 不再预留顶/底行（网页的静态弹幕是动态找空位）
+    expect(DANMAKU).not.toContain('topRows')
+    expect(DANMAKU).toContain('private func staticLane(')
   })
 
   it('解析 B 站 XML（p=time,mode,size,color）', () => {
@@ -343,8 +353,9 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(DANMAKU).toContain('private func scrollLane(')
     expect(DANMAKU).toContain('return -1')
     expect(DANMAKU).toContain('guard lane >= 0 else { return }')
-    // 静态位同样按行数排队，满了丢
-    expect(DANMAKU).toContain('private func staticRow(')
+    // 静态弹幕动态找空道，找不到就丢（不压滚动弹幕）
+    expect(DANMAKU).toContain('private func staticLane(')
+    expect(DANMAKU).toContain('active.contains(where: { $0.lane == lane })')
   })
 
   it('弹幕：60fps 插值（displayLink），不再 4Hz UIView.animate', () => {
@@ -389,5 +400,21 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
   it('原生退出后不再黑屏：给出继续 / 下一集 / 返回三个出口', () => {
     expect(PLAY).toContain('v-if="nativeExited"')
     expect(PLAY).toContain('function nativePlayNext()')
+  })
+
+  it('左上角返回：走 back 指令让父页面后退，不再弹「已退出」面板', () => {
+    expect(BRIDGE).toContain("| 'back'")
+    expect(PLAYER).toContain('case "back":')
+    expect(PLAYER).toContain('private static let backMarker = "__back__"')
+    expect(PLAYER).toContain('pendingNav = Self.backMarker')
+    expect(LAYER).toContain("iosNativeCmd('back')")
+    expect(PLAY).toContain("if (r.nav === '__back__')")
+    // 兜底：深链进入没有历史可退时回片库/首页
+    expect(PLAY).toContain("{ name: 'library' } : { name: 'home' }")
+  })
+
+  it('点播页同样能进端内播放器（与片库共用同一套原生画面/弹幕）', () => {
+    expect(PLAY).toContain('(hasNativePlayer() || hasIosNativePlayer())')
+    expect(PLAY).toContain('if (hasIosNativePlayer() && tryIosNative()) return')
   })
 })

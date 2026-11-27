@@ -66,8 +66,6 @@ final class VlcDanmakuOverlay: UIView {
     private var textSize: CGFloat = 32
     private var laneH: CGFloat = 48
     private var lanes: Int = 8
-    private var topRows: Int = 2
-    private var bottomRows: Int = 2
     private var font: UIFont = .boldSystemFont(ofSize: 32)
     private var layoutSig = ""
     private var laneLastAt: [Int] = Array(repeating: -99_999, count: 64)
@@ -155,19 +153,21 @@ final class VlcDanmakuOverlay: UIView {
         let sig = "\(Int(w))x\(Int(h))|\(scale)|\(areaRatio)|\(scrollMs)"
         guard sig != layoutSig else { return }
         layoutSig = sig
-        textSize = min(56, max(18, h / 32 * scale))
-        laneH = textSize * 1.5
-        lanes = max(3, Int(h * areaRatio / laneH))
         /*
-         * 顶/底静态各占 2 行（区域小则 1 行）。滚动弹幕只在中间走，
-         * 不分开的话密集时静态弹幕会压在滚动弹幕上（TV 2026-11-20 真机截图可见）。
+         * ★ 与网页 DanmakuRenderer 同一套公式（2026-11-27 用户实报
+         * "点播页弹幕很高、片库这个就很低"）：
+         *   字号 = 22 × 缩放 × 窄屏补偿 × 矮屏补偿（12~40）
+         *   车道高 = 字号 + 10（网页是 ceil(fontSize)+上下 padding 8+2）
+         *   车道数 = 高度 × 区域 / 车道高
+         * 旧公式是 h/32 且车道高 = 字号×1.5，再**预留顶部/底部各 2 行**给静态
+         * 弹幕 —— 结果片库只有 6 行左右可用，占屏不到一半，视觉上"低"一大截。
+         * 网页的静态弹幕是**动态找空位**（staticOccupies），不需要预留行。
          */
-        topRows = lanes >= 8 ? 2 : (lanes >= 5 ? 1 : 0)
-        bottomRows = topRows
-        if lanes - topRows - bottomRows < 2 {
-            topRows = 0
-            bottomRows = 0
-        }
+        let narrow = w >= 640 ? 1 : max(0.62, w / 640)
+        let short = min(1, max(0.66, h / 480))
+        textSize = min(40, max(12, 22 * scale * narrow * short))
+        laneH = textSize.rounded(.up) + 10
+        lanes = max(3, Int(h * areaRatio / laneH))
         font = .boldSystemFont(ofSize: textSize)
         // 尺寸变了，按新行数重排（清掉重来，比错位好）
         clearActive()
@@ -307,13 +307,14 @@ final class VlcDanmakuOverlay: UIView {
             guard lane >= 0 else { return }
             y = viewport.minY + CGFloat(lane) * laneH
         } else {
-            lane = staticRow(item.mode)
+            /*
+             * 静态（顶/底）也用**车道号**，与滚动同坐标系：
+             * 顶 = 0..n 从上往下找空道；底 = lanes-1.. 从下往上找空道。
+             * 不预留整段行（网页也是动态找空位），否则滚动区域会被切掉两行。
+             */
+            lane = staticLane(item.mode)
             guard lane >= 0 else { return }
-            if item.mode == 5 {
-                y = viewport.minY + CGFloat(lane) * laneH
-            } else {
-                y = viewport.maxY - CGFloat(lane + 1) * laneH
-            }
+            y = viewport.minY + CGFloat(lane) * laneH
         }
 
         let label = dequeueLabel()
@@ -347,11 +348,12 @@ final class VlcDanmakuOverlay: UIView {
     }
 
     /// 滚动车道是否可用：该道所有在场弹幕的右边缘都已进入画面并留 40pt 余量。
+    ///
+    /// <p>车道范围就是全部车道（0..<lanes）——不预留顶/底行，与网页一致；
+    /// 静态弹幕靠 staticLane 动态避让（找空道，找不到就丢）。
     private func scrollLane(_ pos: Int) -> Int {
-        let from = max(0, topRows)
-        let to = max(from + 1, lanes - bottomRows)
-        guard viewport.width > 1 else { return -1 }
-        for lane in from..<to where lane < laneLastAt.count {
+        guard viewport.width > 1, lanes > 0 else { return -1 }
+        for lane in 0..<lanes where lane < laneLastAt.count {
             // 同车道两次投放的最小间隔：防止密集段两条弹幕贴在一起
             if pos - laneLastAt[lane] < Self.LANE_GAP_MS { continue }
             var right: CGFloat = -1_000_000
@@ -367,13 +369,19 @@ final class VlcDanmakuOverlay: UIView {
         return -1
     }
 
-    /// 顶/底静态位：取**第一个空行**（不是"按在场条数排队"——上排过期后
-    /// 按条数算会把新弹幕放进下排，正好压住还在显示的那条）。
-    private func staticRow(_ mode: Int) -> Int {
-        let maxRows = max(1, mode == 5 ? topRows : bottomRows)
-        var used = Set<Int>()
-        for a in active where !a.scroll && a.item.mode == mode { used.insert(a.lane) }
-        for row in 0..<maxRows where !used.contains(row) { return row }
+    /// 顶/底静态弹幕的车道号：在**该侧前几行**里找没人用的空道。
+    ///
+    /// <p>top：0、1、2…（从上往下）；bottom：lanes-1、lanes-2…（从下往上）。
+    /// 只看前 3 行（网页的静态弹幕同样只贴边放，铺满整屏的静态弹幕反而挡画面）。
+    /// 找不到空道就丢弃，不压字。
+    private func staticLane(_ mode: Int) -> Int {
+        guard lanes > 0 else { return -1 }
+        let maxRows = min(3, lanes)
+        for row in 0..<maxRows {
+            let lane = mode == 5 ? row : (lanes - 1 - row)
+            if active.contains(where: { $0.lane == lane }) { continue }
+            return lane
+        }
         return -1
     }
 

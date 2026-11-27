@@ -80,6 +80,8 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
     private var errorLabel: UILabel?
     /// 关掉原生后让父页面跳去的路由（搜索/设置这类入口）。空 = 不跳
     private var pendingNav = ""
+    /// `nav` 哨兵：用户按的是「返回」，父页面应 router.back() 而不是弹退出面板
+    private static let backMarker = "__back__"
     /// tick 计数（pushState 降频用：起播时 4Hz，稳定后 2Hz）
     private var tickCount = 0
     /// 拖动中不回写 slider，否则 0.25s 的 tick 会把拖动位置抢回去
@@ -313,6 +315,14 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
             if target == currentMediaUrl { return }
             openNewMedia(u)
         case "close":
+            finish(ended: false)
+        case "back":
+            /*
+             * 用户按了「返回」（2026-11-27）。与 close 的区别：父页面要
+             * router.back() 回片库/详情，而不是停在"已退出端内播放器"面板。
+             * 标记复用 nav 字段（父页面识别这个哨兵值）。
+             */
+            pendingNav = Self.backMarker
             finish(ended: false)
         case "orientation":
             ShellOrientation.apply(value as? String ?? "")
@@ -918,6 +928,8 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
     }
 
     @objc private func closePlayer() {
+        // 内置控制条的返回键同样是"返回上一页"，不是"停在已退出面板"
+        pendingNav = Self.backMarker
         finish(ended: false)
     }
 

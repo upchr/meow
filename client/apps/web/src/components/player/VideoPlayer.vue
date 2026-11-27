@@ -2543,7 +2543,12 @@ function stopMedia() {
  */
 function goBackFromPlayer() {
   if (iosNative) {
-    iosNativeCmd('close')
+    /*
+     * 用户按的是「返回」，不是「关闭播放器」：带 back 标记关原生，父页面据此
+     * 直接 router.back() 回片库/详情，而不是弹"已退出端内播放器"面板
+     * （2026-11-27 用户实报：左上角返回后不该出现那个面板）。
+     */
+    iosNativeCmd('back')
     return
   }
   router.back()
@@ -4570,9 +4575,9 @@ const router = useRouter()
  */
 function leavePlayback() {
   // 端内原生渲染：控制层 WebView 的历史只有一条，router.back() 会落到首页/错误页
-  // （真机实报「返回跳到缺依赖类页面」）。关原生，由父页面恢复。
+  // （真机实报「返回跳到缺依赖类页面」）。带 back 标记关原生，由父页面后退。
   if (iosNative) {
-    iosNativeCmd('close')
+    iosNativeCmd('back')
     return
   }
   const before = route.fullPath

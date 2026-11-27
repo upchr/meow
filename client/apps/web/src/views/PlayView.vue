@@ -1400,7 +1400,8 @@ const errorSubText = computed(() => {
 const canUseNative = computed(() => {
   const raw = play.value?.url
   const u = typeof raw === 'string' ? raw : ''
-  return hasNativePlayer() && !!u && /^https?:/i.test(u)
+  // TV 有 ExoPlayer 桥，iOS 有端内 VLCKit：两者都算"能用原生播"
+  return (hasNativePlayer() || hasIosNativePlayer()) && !!u && /^https?:/i.test(u)
 })
 
 /** 当前应从哪里开始播：有续播记录就用它，否则从头 */
@@ -1468,8 +1469,14 @@ function switchToNativePlayer() {
   tryNative()
 }
 
-/** 错误页的「用原生播放器打开」：把当前地址交给 ExoPlayer 再试一次 */
+/** 错误页的「用原生播放器打开」：TV 交 ExoPlayer，iOS 交端内 VLCKit */
 function tryNative() {
+  /*
+   * iOS 没有 ExoPlayer 桥：同一入口按能力分派到端内 VLCKit
+   * （2026-11-27）。不先分派的话，iOS 上这个按钮会被 canUseNative 隐藏，
+   * 用户就只剩"换线路/重试"两条路 —— 而 VLCKit 往往能直接播。
+   */
+  if (hasIosNativePlayer() && tryIosNative()) return
   const raw = play.value?.url
   const u = typeof raw === 'string' ? raw : ''
   if (!u) return
@@ -2978,6 +2985,22 @@ onMounted(() => {
         },
         { notify: r.ended },
       )
+    }
+    /*
+     * 左上角「返回」（2026-11-27 用户要求）：直接回上一页，**不弹**"已退出
+     * 端内播放器"面板。控制层是独立 WebView，历史里只有它自己，所以后退必须
+     * 由父页面代劳；没有历史可退时（深链进入）兜底回片库/首页。
+     */
+    if (r.nav === '__back__') {
+      nativeExited.value = false
+      nativeJustClosed = true
+      const before = route.fullPath
+      router.back()
+      window.setTimeout(() => {
+        if (route.fullPath !== before) return
+        void router.replace(isLibraryPlay.value ? { name: 'library' } : { name: 'home' })
+      }, 300)
+      return
     }
     /*
      * 搜索/设置这类入口：关原生后直接路由过去（控制层在独立 WebView 里，
