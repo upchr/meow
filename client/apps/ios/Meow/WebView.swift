@@ -112,11 +112,15 @@ struct WebView: UIViewRepresentable {
                         PowerTimer.start(seconds: (dict["value"] as? NSNumber)?.intValue ?? 0)
                     case "apiBackend":
                         /*
-                         * 后端地址（2026-11-27）：落 UserDefaults，下次
-                         * makeBootScript 注入新 apiBase。页面保存后会自己
-                         * location.reload()，这里不回执。
+                         * 后端地址（2026-11-27 真机修正）：落 UserDefaults 之后
+                         * **必须由壳重建注入脚本再 reload**。页面自己 reload 只会
+                         * 重跑启动时注册的旧脚本，注入的 apiBase 还是旧值 ——
+                         * 表现就是「地址刚填上又刷回 127.0.0.1:9978」。
+                         * 非法协议（非 http(s)）不重载，保持当前后端不动。
                          */
-                        BackendOverride.set(dict["value"] as? String ?? "")
+                        if BackendOverride.set(dict["value"] as? String ?? "") {
+                            Task { @MainActor in Bootstrap.reloadWebWithCurrentBackend() }
+                        }
                     case "notify":
                         Notifier.shared.notify(
                             title: dict["title"] as? String ?? "喵播放器",

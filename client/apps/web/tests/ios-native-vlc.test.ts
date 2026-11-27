@@ -480,6 +480,22 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(PLIST).toContain('NSAllowsArbitraryLoads')
   })
 
+  it('改后端地址后必须由壳重建注入脚本再 reload（页面自己 reload 会刷回旧地址）', () => {
+    /*
+     * 2026-11-27 真机：扫描选中地址点「保存并重连」→ 地址短暂填上又刷回
+     * 127.0.0.1:9978。根因是 boot 脚本在 makeUIView 时就被注册成
+     * WKUserScript，页面 location.reload() 只重跑旧脚本，注入的 apiBase 不变。
+     * 所以壳收到 apiBackend 后必须换脚本 + reload；页面侧只留兜底定时器。
+     */
+    expect(BOOT).toContain('static var embeddedBase')
+    expect(BOOT).toContain('Self.embeddedBase = base')
+    expect(BOOT).toContain('static func reloadWebWithCurrentBackend()')
+    expect(BOOT).toContain('removeAllUserScripts()')
+    expect(BOOT).toContain('makeBootScript(base: base, site: launchSite)')
+    expect(WEBVIEW).toMatch(/BackendOverride\.set\([\s\S]{0,240}reloadWebWithCurrentBackend/)
+    expect(SETTINGS).toContain('window.setTimeout(() => location.reload(), 1500)')
+  })
+
   it('字幕：随 meta/open 交给 VLC（:sub-file），不依赖运行期 slave API', () => {
     expect(PLAYER).toContain(':sub-file=')
     expect(PLAYER).toContain('private var pendingSubUrl')

@@ -1,4 +1,6 @@
 import Foundation
+// 改后端地址要重建 WKUserScript（见 reloadWebWithCurrentBackend）
+import WebKit
 
 /// 启动顺序：
 ///  1. 准备沙盒数据目录（首次启动播种空配置）
@@ -17,6 +19,12 @@ final class Bootstrap: ObservableObject {
 
     /// 不参与观察：webURL 变化时 RootView 已经会重建 WebView。
     var bootScript = ""
+
+    /// 端内后端地址（JVM 起在 9978；起不来为空串）。
+    /// ★ 必须在**用户覆盖之前**记下：改地址后要能答出「恢复端内」是哪个地址。
+    static var embeddedBase = ""
+    /// 启动参数 `--site`（重载重建注入脚本时要带上，否则深链丢失）
+    static var launchSite = ""
 
     private let staticServer = StaticServer()
     private var started = false
@@ -133,14 +141,15 @@ final class Bootstrap: ObservableObject {
          * 但**桥注入的 apiBase 以用户配置为准** —— resolveBase() 在 iOS 只认
          * 桥，所以这里换值就等于整页换后端。空串 = 用端内后端。
          */
+        Self.embeddedBase = base
         let override = BackendOverride.current()
         if !override.isEmpty {
             base = override
             LaunchLog.write("backend override: \(override)")
         }
 
-        let site = Self.argValue("--site") ?? ""
-        bootScript = Self.makeBootScript(base: base, site: site)
+        Self.launchSite = Self.argValue("--site") ?? ""
+        bootScript = Self.makeBootScript(base: base, site: Self.launchSite)
         webURL = URL(string: "http://127.0.0.1:9979/")
         LaunchLog.write("web url set (base=\(base.isEmpty ? "none" : base))")
         startStaticWatchdog()
@@ -221,6 +230,34 @@ final class Bootstrap: ObservableObject {
             }
         }
         return parts.joined(separator: ":")
+    }
+
+    /// 当前生效的后端地址：用户覆盖优先，否则端内。
+    static func effectiveBase() -> String {
+        let o = BackendOverride.current()
+        return o.isEmpty ? embeddedBase : o
+    }
+
+    /**
+     * 改完后端地址后**用新 apiBase 重建注入脚本并重载**。
+
+     * <p>为什么不让页面自己 `location.reload()`（2026-11-27 真机实测）：
+     * boot 脚本是 `makeUIView` 时以 `WKUserScript(.atDocumentStart)` 注册进去的，
+     * reload 只会重跑**旧**脚本 —— 注入的 `apiBase` 仍是启动那一刻的值，
+     * 用户看到的就是「地址刚填上又被刷回 127.0.0.1:9978」。
+     * 所以必须先换掉注册的脚本、再 reload。
+     */
+    static func reloadWebWithCurrentBackend() {
+        guard let wv = WebViewRegistry.view else { return }
+        let base = effectiveBase()
+        let script = makeBootScript(base: base, site: launchSite)
+        let uc = wv.configuration.userContentController
+        uc.removeAllUserScripts()
+        uc.addUserScript(WKUserScript(source: script,
+                                      injectionTime: .atDocumentStart,
+                                      forMainFrameOnly: false))
+        LaunchLog.write("backend reload: base=\(base.isEmpty ? "none" : base)")
+        wv.reload()
     }
 
     private static func makeBootScript(base: String, site: String) -> String {
@@ -412,13 +449,16 @@ enum BackendOverride {
         return v.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func set(_ raw: String) {
+    /// 写入覆盖地址；非法协议返回 false（调用方不要拿它去重载网页）。
+    @discardableResult
+    static func set(_ raw: String) -> Bool {
         let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // 只收 http(s)：file:// / about: 之类写进去会让整页白屏
         let ok = v.isEmpty || v.lowercased().hasPrefix("http://") || v.lowercased().hasPrefix("https://")
-        guard ok else { return }
+        guard ok else { return false }
         if v.isEmpty { UserDefaults.standard.removeObject(forKey: key) }
         else { UserDefaults.standard.set(v, forKey: key) }
         LaunchLog.write("backend override -> \(v.isEmpty ? "(embedded)" : v)")
+        return true
     }
 }

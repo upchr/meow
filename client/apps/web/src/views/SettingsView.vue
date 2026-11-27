@@ -191,6 +191,10 @@ import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
 import UpdateCenter from '@/components/common/UpdateCenter.vue'
 import GitAccelPanel from '@/components/common/GitAccelPanel.vue'
+// ★ 模板里的 <RuntimeDepsPanel> **不会自动解析**，漏 import 时 Vue 只在 console
+// 报 Unresolved component，页面上「运行时」分区只剩标题 + 副标题（2026-11-27
+// iOS 真机实测；PC/fpk 同受影响）。`tests/runtime-placement.test.ts` 锁住这一条。
+import RuntimeDepsPanel from '@/components/common/RuntimeDepsPanel.vue'
 import { alertDialog, confirmDialog } from '@/composables/useConfirm'
 
 const store = useAppStore()
@@ -374,7 +378,16 @@ async function saveAndReconnect() {
     } finally {
       apiBusy.value = false
     }
-    location.reload()
+    /*
+     * ★ 这里**不能**自己 location.reload()（2026-11-27 真机实测）：
+     * boot 脚本是壳启动时以 WKUserScript(.atDocumentStart) 注册的，reload
+     * 只重跑**旧**脚本，注入的 apiBase 仍是启动那一刻的值 —— 用户看到的就是
+     * 「地址刚填上又被刷回 127.0.0.1:9978」。正确链路是壳收到 apiBackend 后
+     * 落盘 + 用新地址重建注入脚本 + reload（Bootstrap.reloadWebWithCurrentBackend）。
+     * 1.5s 兜底：壳若异常没重载，自己刷新也比"看起来保存了却没生效"强；
+     * 壳已重载时旧文档连同这个定时器一起销毁，不会二次刷新。
+     */
+    window.setTimeout(() => location.reload(), 1500)
     return
   }
   const unchanged = url === (manualApi.value || '')
@@ -471,14 +484,19 @@ async function saveAndReconnect() {
   }
 }
 
-/** iOS：恢复端内后端（清壳里存的覆盖地址，reload 重新注入桥） */
+/**
+ * iOS：恢复端内后端（清壳里存的覆盖地址）。
+ *
+ * 与「保存并重连」同一条链路：壳落盘后用新 apiBase 重建注入脚本再 reload，
+ * 页面自己 reload 只会重跑旧脚本（理由见 saveAndReconnect 的 iOS 分支）。
+ */
 function restoreEmbeddedBackend() {
   const apply = (window as unknown as {
     meowIos?: { setApiBackend?: (u: string) => boolean }
   }).meowIos?.setApiBackend
   if (typeof apply !== 'function') return
   apply('')
-  location.reload()
+  window.setTimeout(() => location.reload(), 1500)
 }
 
 /** 恢复"由插件托管"：清掉手填地址，重启后重新问插件要端口 */
