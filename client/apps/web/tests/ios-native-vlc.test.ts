@@ -452,6 +452,18 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(PLAYER).toContain('|| danmakuXml == nil')
   })
 
+  it('对外接口在原生模式下改走指令（投屏暂停 / 从头开始 / 进度读取）', () => {
+    // 投屏成功后 castTo 调 player.pause()：打 <video> 停不了 VLC，会两边同时出声
+    expect(LAYER).toMatch(/function pause\(\)[\s\S]{0,500}iosNativeCmd\('pause'\)/)
+    // 从头开始 / 恢复播放
+    expect(LAYER).toContain("iosNativeCmd('seek', 0)")
+    expect(LAYER).toMatch(/function play\(\)[\s\S]{0,200}iosNativeCmd\('play'\)/)
+    // 进度/时长必须读原生推送的 ref，不能读没在播的 <video>
+    expect(LAYER).toContain('if (iosNative) return currentTime.value')
+    expect(LAYER).toContain('if (iosNative) return !playing.value')
+    expect(LAYER).toContain('if (iosNative) return duration.value || props.totalDuration || 0')
+  })
+
   it('睡眠定时在原生播放时也能停（控制层补 powerTimer 桥 + 直接暂停）', () => {
     // 控制层是独立 WebView：不补 powerTimer 的话「更多 → 定时」设了没人收
     expect(PLAYER).toContain("op:'powerTimer'")

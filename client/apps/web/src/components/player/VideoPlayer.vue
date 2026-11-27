@@ -737,6 +737,14 @@ const hoverTime = ref<number | null>(null)
 
 /** 重播：回到开头继续播 */
 function restart() {
+  // 端内原生渲染：`<video>` 不参与播放，必须走原生（否则"从头开始"点了没反应）
+  if (iosNative) {
+    resumeAfterReload = 0
+    iosNativeCmd('seek', 0)
+    iosNativeCmd('play')
+    clearResume()
+    return
+  }
   const v = video.value
   if (!v) return
   // 重播是明确的"从头"：别让上一次刷新挂起的续播位置捣乱
@@ -749,6 +757,11 @@ function restart() {
 
 /** 从"投屏回到本机"等处恢复播放（不重置进度）。 */
 function play() {
+  if (iosNative) {
+    iosNativeCmd('play')
+    userPausedAt = 0
+    return
+  }
   const v = video.value
   if (v) {
     userPausedAt = 0
@@ -882,16 +895,24 @@ function applySeekDialog() {
 
 /** 供外部读取当前进度 */
 function getTime(): number {
+  /*
+   * 端内原生渲染：`<video>.currentTime` 恒为 0（元素没在播），
+   * 必须读原生每 200ms 灌进来的 ref —— 否则 handoffPos()（原生重开、
+   * 投屏续播、进度回写）拿到的是"上次保存的位置"而不是正在看的位置。
+   */
+  if (iosNative) return currentTime.value
   return video.value?.currentTime ?? 0
 }
 
 /** 投屏接收页需要：本地是否暂停 / 总时长 */
 function isPaused(): boolean {
+  if (iosNative) return !playing.value
   const v = video.value
   return !v || v.paused
 }
 
 function getDuration(): number {
+  if (iosNative) return duration.value || props.totalDuration || 0
   const d = video.value?.duration
   return typeof d === 'number' && Number.isFinite(d) ? d : 0
 }
@@ -7927,12 +7948,20 @@ function clearResume() {
 
 /** 暂停播放。投屏后本节要停，否则两边同时出声。 */
 function pause() {
-  const v = video.value
   // 外部（父组件/投屏）主动暂停：撤掉回前台续播的欠账，避免自己又播起来
   userPausedAt = Date.now()
   bgKeepPlaying = false
   cancelResumeTimers()
   clearRestoreWindow()
+  /*
+   * 端内原生渲染：`<video>.pause()` 打不到 VLC —— 投屏成功后本机不停的话
+   * 会和电视同时出声（2026-11-27 审计）。交给原生 pause 指令。
+   */
+  if (iosNative) {
+    iosNativeCmd('pause')
+    return
+  }
+  const v = video.value
   if (v && !v.paused) v.pause()
 }
 
