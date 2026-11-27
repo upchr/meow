@@ -35,7 +35,7 @@ final class VlcDanmakuOverlay: UIView {
     private struct Active {
         let item: Item
         let label: UILabel
-        /// 滚动弹幕的车道号；静态弹幕是所在行号
+        /// 车道号（滚动/静态共用同一坐标系，0 = 最上面一行）
         let lane: Int
         let bornPosMs: Int
         let width: CGFloat
@@ -43,6 +43,8 @@ final class VlcDanmakuOverlay: UIView {
         /// 容器坐标下的顶边
         let y: CGFloat
         let scroll: Bool
+        /// 这一条的滚动时长（毫秒）。长弹幕按网页 durFor 缩短，见 spawn。
+        let durMs: Int
     }
 
     private var items: [Item] = []
@@ -84,10 +86,11 @@ final class VlcDanmakuOverlay: UIView {
     // MARK: - 配置
 
     func applyOptions(opacity: CGFloat, scale: CGFloat, durationSec: Int, areaRatio: CGFloat) {
-        self.opacity = min(1, max(0.1, opacity))
+        // 上下限与网页 DanmakuOptions 一致（0.2 / 0.5~2 / 4~30s / 0.3）
+        self.opacity = min(1, max(0.2, opacity))
         self.scale = min(2, max(0.5, scale))
         self.scrollMs = min(30, max(4, durationSec)) * 1000
-        self.areaRatio = min(1, max(0.2, areaRatio))
+        self.areaRatio = min(1, max(0.3, areaRatio))
         recomputeMetrics()
     }
 
@@ -331,7 +334,8 @@ final class VlcDanmakuOverlay: UIView {
         label.font = font
         label.textColor = item.color.withAlphaComponent(opacity)
         label.layer.shadowColor = UIColor.black.withAlphaComponent(opacity * 0.85).cgColor
-        label.layer.shadowRadius = 1
+        // 与网页 sprite 的 shadowBlur=3 对齐（位图缓存，不会每帧重算）
+        label.layer.shadowRadius = 2
         label.layer.shadowOffset = .zero
         label.layer.shadowOpacity = 1
         label.alpha = 1
@@ -343,8 +347,32 @@ final class VlcDanmakuOverlay: UIView {
         let h = max(laneH, fit.height.rounded(.up))
         label.frame = CGRect(x: viewport.maxX, y: y, width: w, height: h)
         addSubview(label)
+        // 长弹幕按网页 durFor 缩短时长：宽度超过屏宽 20% 时按比例加速，
+        // 免得一条长弹幕霸占整条车道十几秒（观感上"速度"两边才对得上）
+        let dur = scroll ? durFor(width: w) : scrollMs
         active.append(Active(item: item, label: label, lane: lane,
-                             bornPosMs: pos, width: w, height: h, y: y, scroll: scroll))
+                             bornPosMs: pos, width: w, height: h, y: y, scroll: scroll,
+                             durMs: dur))
+    }
+
+    /**
+     * 一条宽 width 的弹幕该滚多久（毫秒），逐条照搬网页 DanmakuRenderer.durFor：
+     * 短弹幕用基准时长；超过屏宽 20% 的按 `参考/实际` 缩短（下限 30%），
+     * 再用「每秒最多移动多少像素」封顶，避免被压到看不清。
+     */
+    private func durFor(width: CGFloat) -> Int {
+        let base = scrollMs
+        let w = viewport.width
+        guard w > 1, base > 0 else { return base }
+        let refW = w * 0.2
+        if width <= refW { return base }
+        let factor = max(0.3, refW / width)
+        let byFactor = max(2_000, Int(Double(base) * Double(factor)))
+        if byFactor >= base { return byFactor }
+        let vBase = (w + refW) / CGFloat(base)          // 像素 / 毫秒
+        let maxSpeed = vBase * 1.6
+        let minDur = Int(((w + width) / maxSpeed).rounded())
+        return max(2_000, byFactor, minDur)
     }
 
     /// 滚动车道是否可用：该道所有在场弹幕的右边缘都已进入画面并留 40pt 余量。
@@ -387,7 +415,9 @@ final class VlcDanmakuOverlay: UIView {
 
     private func currentX(_ a: Active, at pos: Int) -> CGFloat {
         let elapsed = max(0, pos - a.bornPosMs)
-        let progress = min(1.0, CGFloat(elapsed) / CGFloat(scrollMs))
+        // 逐条时长（长弹幕已按 durFor 缩短）：用全局 scrollMs 会让长弹幕"慢半拍"
+        let dur = a.durMs > 0 ? a.durMs : scrollMs
+        let progress = min(1.0, CGFloat(elapsed) / CGFloat(dur))
         return viewport.maxX - (viewport.width + a.width) * progress
     }
 
@@ -420,7 +450,9 @@ final class VlcDanmakuOverlay: UIView {
         keep.reserveCapacity(active.count)
         for a in active {
             let age = pos - a.bornPosMs
-            let dead = a.scroll ? age > scrollMs + 300 : age > Self.STATIC_MS + 300
+            // 按逐条时长判死（长弹幕被 durFor 缩短过，用全局时长会晚收 10 秒）
+            let dur = a.durMs > 0 ? a.durMs : scrollMs
+            let dead = a.scroll ? age > dur + 300 : age > Self.STATIC_MS + 300
             if dead {
                 recycle(a.label)
             } else {
@@ -466,9 +498,12 @@ final class VlcDanmakuOverlay: UIView {
     /**
      * 解析 B 站风格的弹幕 XML：`<d p="time,mode,size,color,...">text</d>`。
      *
-     * <p>与 TV 的 `parseDanmaku` 同一套判据：p 的第 1 段是**秒**（可能带小数），
-     * 第 2 段是模式，第 4 段是十进制 RGB。offsetMs 是弹幕时间轴校正（用户可配），
-     * blockWords 是屏蔽词（命中即丢弃，逗号/空白分隔，与 TV 一致）。
+     * <p>判据与网页 VideoPlayer 的 `filterDanmaku` 对齐（2026-11-27）：
+     *   ① 实体解码（含 `&#128077;` 这类数字实体，否则表情会原样显示成乱码）；
+     *   ② 纯符号/纯空白丢掉（`\p{L}\p{N}` 一个都没有）；
+     *   ③ 屏蔽词命中丢掉；
+     *   ④ 同文本 1.5 秒内重复只留第一条（刷屏）。
+     * 不做 ③④ 的话，原生弹幕会比点播页"多出一堆重复的刷屏"。
      */
     static func parse(xml: String, offsetMs: Int, blockWords: [String] = []) -> [Item] {
         var out: [Item] = []
@@ -478,6 +513,7 @@ final class VlcDanmakuOverlay: UIView {
         let ns = xml as NSString
         let matches = re.matches(in: xml, range: NSRange(location: 0, length: ns.length))
         out.reserveCapacity(matches.count)
+        var lastAt: [String: Int] = [:]
         for m in matches {
             guard m.numberOfRanges >= 3 else { continue }
             let p = ns.substring(with: m.range(at: 1))
@@ -489,6 +525,8 @@ final class VlcDanmakuOverlay: UIView {
             let color = Int(parts[3]) ?? 0xFFFFFF
             let decoded = decodeEntities(text)
             guard !decoded.isEmpty else { continue }
+            // 纯符号 / 纯 emoji（网页 pureSymbol 同一判据）
+            guard decoded.rangeOfCharacter(from: .alphanumerics) != nil else { continue }
             var blocked = false
             for w in blockWords where !w.isEmpty {
                 if decoded.contains(w) { blocked = true; break }
@@ -496,6 +534,9 @@ final class VlcDanmakuOverlay: UIView {
             if blocked { continue }
             let timeMs = Int(seconds * 1000) + offsetMs
             guard timeMs >= 0 else { continue }
+            // 同文本 1.5s 内重复 = 刷屏，只留第一条
+            if let prev = lastAt[decoded], abs(timeMs - prev) < 1_500 { continue }
+            lastAt[decoded] = timeMs
             out.append(Item(timeMs: timeMs,
                             text: decoded,
                             mode: mode,
@@ -512,11 +553,52 @@ final class VlcDanmakuOverlay: UIView {
                        alpha: 1)
     }
 
-    /// 弹幕正文只可能出现这几个实体；顺序不能反（&amp; 必须先处理，否则 &amp;lt; 会二次解码）
+    /**
+     * 弹幕正文的实体解码。
+     *
+     * <p>顺序不能反：`&amp;` 必须先处理，否则 `&amp;lt;` 会二次解码。
+     * <p>数字实体（`&#128077;` / `&#x1F44D;`）也必须解 —— 网页那边解两层，
+     * 不解的话原生弹幕里的表情会原样显示成 `&#128077;`（2026-11-27 对齐）。
+     */
     private static func decodeEntities(_ s: String) -> String {
         var out = s
         for (k, v) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'")] {
             out = out.replacingOccurrences(of: k, with: v)
+        }
+        return decodeNumericEntities(out)
+    }
+
+    /// 解 `&#123;`（十进制）与 `&#x1F600;`（十六进制）两种数字实体。
+    private static func decodeNumericEntities(_ s: String) -> String {
+        guard s.contains("&#") else { return s }
+        var out = String()
+        out.reserveCapacity(s.count)
+        var i = s.startIndex
+        while i < s.endIndex {
+            let next = s.index(after: i)
+            if s[i] == "&", next < s.endIndex, s[next] == "#" {
+                var j = s.index(after: next)
+                var hex = false
+                if j < s.endIndex, s[j] == "x" || s[j] == "X" {
+                    hex = true
+                    j = s.index(after: j)
+                }
+                var digits = ""
+                while j < s.endIndex, s[j] != ";", digits.count < 8 {
+                    digits.append(s[j])
+                    j = s.index(after: j)
+                }
+                if j < s.endIndex, s[j] == ";", !digits.isEmpty,
+                   let code = UInt32(digits, radix: hex ? 16 : 10),
+                   code <= 0x10FFFF, !(0xD800...0xDFFF).contains(code),
+                   let scalar = UnicodeScalar(code) {
+                    out.unicodeScalars.append(scalar)
+                    i = s.index(after: j)
+                    continue
+                }
+            }
+            out.append(s[i])
+            i = next
         }
         return out
     }

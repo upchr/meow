@@ -372,7 +372,7 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     // 中文密笔画内芯被盖 → 屏幕上是一片发脏的灰边字。
     expect(DANMAKU).not.toContain('strokeWidth: -6.0')
     expect(DANMAKU).toContain('label.layer.shadowColor')
-    expect(DANMAKU).toContain('label.layer.shadowRadius = 1')
+    expect(DANMAKU).toContain('label.layer.shadowRadius = 2')
     // 掉帧靠位图缓存解决：阴影烘进 raster cache，移动时只做合成
     expect(DANMAKU).toContain('shouldRasterize = true')
     expect(DANMAKU).toContain('rasterizationScale')
@@ -416,5 +416,30 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
   it('点播页同样能进端内播放器（与片库共用同一套原生画面/弹幕）', () => {
     expect(PLAY).toContain('(hasNativePlayer() || hasIosNativePlayer())')
     expect(PLAY).toContain('if (hasIosNativePlayer() && tryIosNative()) return')
+  })
+
+  it('弹幕解析与网页 filterDanmaku 对齐（数字实体 / 纯符号 / 同文 1.5s 去重）', () => {
+    expect(DANMAKU).toContain('decodeNumericEntities')
+    expect(DANMAKU).toContain('rangeOfCharacter(from: .alphanumerics)')
+    expect(DANMAKU).toContain('abs(timeMs - prev) < 1_500')
+  })
+
+  it('长弹幕按网页 durFor 加速（速度观感两边一致）', () => {
+    expect(DANMAKU).toContain('private func durFor(width:')
+    expect(DANMAKU).toContain('let durMs: Int')
+    expect(DANMAKU).toContain('let dur = a.durMs > 0 ? a.durMs : scrollMs')
+  })
+
+  it('原生播放每 12 秒回传进度（切后台/被杀最多丢 12 秒）', () => {
+    expect(PLAYER).toContain('"/api/state/progress"')
+    expect(PLAYER).toContain('timeInterval: 12')
+    expect(PLAYER).toContain('didEnterBackgroundNotification')
+    expect(PLAYER).toContain('reportProgress(force: true)')
+  })
+
+  it('控制层渲染进程被回收时自动重载（否则控制条永久空白）', () => {
+    expect(PLAYER).toContain('WKNavigationDelegate')
+    expect(PLAYER).toContain('webViewWebContentProcessDidTerminate')
+    expect(PLAYER).toContain('webView.reload()')
   })
 })

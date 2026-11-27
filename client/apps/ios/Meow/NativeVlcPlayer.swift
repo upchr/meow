@@ -27,7 +27,7 @@ import MobileVLCKit
  * 在 3.x 各小版本之间改过（`Notification` / `Notification!`），而 0.25 秒轮询
  * `state` 只依赖稳定属性 —— 少一个编译期踩坑点。
  */
-final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
+final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
 
     // MARK: - 入参
 
@@ -130,6 +130,7 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         prepareMedia()
         attachDanmaku()
         startTicking()
+        startProgressLoop()
         /*
          * 回前台补播（2026-11-27 补）：App 挂起时 VLC 的音频输出会被系统停掉，
          * 回前台**不会自己恢复** —— 表现是"切出去再回来画面还在但不动"。
@@ -138,6 +139,14 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         NotificationCenter.default.addObserver(
             self, selector: #selector(appBecameActive),
             name: UIApplication.didBecomeActiveNotification, object: nil)
+        /*
+         * 进后台先强制回传一次进度（2026-11-27）：
+         * 有后台音频时进程不会被挂起，但内存压力下系统仍可能直接杀掉 App；
+         * 只靠"退出时回传"的话，被杀那一刻丢掉的是整段观看进度。
+         */
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification, object: nil)
     }
 
     // MARK: - web 控制层
@@ -225,6 +234,8 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         w.scrollView.isOpaque = false
         w.scrollView.isScrollEnabled = false
         w.scrollView.contentInsetAdjustmentBehavior = .never
+        // 控制层 WebView 崩溃（渲染进程被系统回收）时自动重载，见导航代理回调
+        w.navigationDelegate = self
         view.addSubview(w)
         controlWebView = w
         w.load(URLRequest(url: url))
@@ -391,6 +402,22 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         }
     }
 
+    // MARK: - WKNavigationDelegate
+
+    /**
+     * 控制层 WebView 的渲染进程被系统回收（内存压力）时自动重载。
+     *
+     * <p>不重载的话画面还在放、但控制层永久空白：没有控制条、没有返回、也点不动
+     * —— 用户只能强退（同"隐藏 WebView"那次回归的观感）。
+     * 重载会重新注入 `__meowNativeLayer` / `meowIos.*`；页面会再走一次
+     * native 层 load()，把当前地址推回 `open` —— 原生侧对同地址是 no-op，
+     * 播放进度不受影响。
+     */
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        LaunchLog.write("[vlc] control webview terminated, reload")
+        webView.reload()
+    }
+
     /// 换片（选集/换线）：保留播放器实例，只换 media（避免整页重建）
     private func openNewMedia(_ u: URL) {
         LaunchLog.write("[vlc] open \(u.absoluteString.prefix(160))")
@@ -447,6 +474,9 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         super.viewWillDisappear(animated)
         tickTimer?.invalidate()
         tickTimer = nil
+        // 兜底：不是走 finish 的消失路径也要停掉进度回传（否则 runloop 里留一个死定时器）
+        progressTimer?.invalidate()
+        progressTimer = nil
     }
 
     override var prefersStatusBarHidden: Bool { true }
@@ -623,6 +653,9 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
     private var danmakuRequestGeneration = 0
     /// 最新的网页弹幕设置（dmOptions 覆盖 metaJson.dm，换集重拉时不能丢）
     private var currentDmOptions: [String: Any] = [:]
+    /// 进度回传定时器（12 秒一次，与 TV 的 NativePlayerActivity 同频）
+    private var progressTimer: Timer?
+    private var lastReportedSec: Double = 0
     /// 静音前的系统音量：mute op 用它还原（拖音量条时留给滑块值，不抢）
     private var lastUnmutedVolume = 0
     /// 当前媒体地址：`open` 收到同一地址时不重开（重开会把进度打回 0）
@@ -727,6 +760,69 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
             $0 == "," || $0 == "，" || $0.isWhitespace
         }).map { String($0) }.filter { !$0.isEmpty }
         return VlcDanmakuOverlay.parse(xml: xml, offsetMs: offsetMs, blockWords: words)
+    }
+
+    // MARK: - 进度回传
+
+    /**
+     * 原生播放期间每 12 秒把进度写回后端（与 TV 的 NativePlayerActivity 同频）。
+     *
+     * <p>为什么必须做：退出时回传只覆盖"正常退出"。切后台被系统回收、或用户
+     * 直接杀掉 App 这两种情况下，进度会退回**上一次正常退出**（可能是一集之前）。
+     * 后端接口 `POST /api/state/progress` 的契约见 StateRoutes。
+     */
+    private func startProgressLoop() {
+        guard !apiBaseRaw().isEmpty,
+              let site = meta["site"] as? String, !site.isEmpty,
+              let vod = meta["vod"] as? String, !vod.isEmpty else { return }
+        progressTimer?.invalidate()
+        let t = Timer(timeInterval: 12, repeats: true) { [weak self] _ in
+            self?.reportProgress(force: false)
+        }
+        RunLoop.main.add(t, forMode: .common)
+        progressTimer = t
+    }
+
+    private func apiBaseRaw() -> String {
+        let s = (meta["apiBase"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.hasSuffix("/") ? String(s.dropLast()) : s
+    }
+
+    private func reportProgress(force: Bool) {
+        let base = apiBaseRaw()
+        guard !base.isEmpty,
+              let site = meta["site"] as? String, !site.isEmpty,
+              let vod = meta["vod"] as? String, !vod.isEmpty else { return }
+        let posSec = Double(player.time.intValue) / 1000
+        guard posSec >= 1 else { return }
+        if !force, abs(posSec - lastReportedSec) < 2 { return }
+        lastReportedSec = posSec
+        var body: [String: Any] = [
+            "site": site,
+            "vod_id": vod,
+            "pos": posSec,
+            "ep_at": Int(Date().timeIntervalSince1970 * 1000),
+        ]
+        let totalSec = (durationMs() ?? 0) / 1000
+        if totalSec > 0 { body["dur"] = totalSec }
+        if let f = meta["flag"] as? String, !f.isEmpty { body["flag"] = f }
+        if let e = meta["ep"] as? String, !e.isEmpty { body["ep"] = e }
+        if let u = meta["epUrl"] as? String, !u.isEmpty { body["ep_url"] = u }
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let url = URL(string: base + "/api/state/progress") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = data
+        req.timeoutInterval = 8
+        URLSession.shared.dataTask(with: req) { _, _, err in
+            if let err { LaunchLog.write("[vlc] progress report failed: \(err.localizedDescription)") }
+        }.resume()
+    }
+
+    @objc private func appDidEnterBackground() {
+        // 后台可能被回收：先落一次盘，最多丢 12 秒
+        reportProgress(force: true)
     }
 
     // MARK: - 轮询
@@ -941,6 +1037,10 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         tickTimer?.invalidate()
         tickTimer = nil
         hideControlsWork?.cancel()
+        // 关页前强制回传一次进度（正常退出路径也别只靠父页面）
+        reportProgress(force: true)
+        progressTimer?.invalidate()
+        progressTimer = nil
 
         let pos = Double(player.time.intValue)
         let total = durationMs() ?? 0
@@ -949,6 +1049,8 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         AudioSession.setPlaying(false)
         NotificationCenter.default.removeObserver(
             self, name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.removeObserver(
+            self, name: UIApplication.didEnterBackgroundNotification, object: nil)
 
         // 竖屏还给 web（web 播放页是竖屏优先，恢复横屏意图由它自己决定）
         ShellOrientation.apply("portrait")
