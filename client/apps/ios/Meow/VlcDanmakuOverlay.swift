@@ -239,6 +239,9 @@ final class VlcDanmakuOverlay: UIView {
     private func startLink() {
         guard link == nil, window != nil else { return }
         let l = CADisplayLink(target: self, selector: #selector(step))
+        // ProMotion 屏默认 120Hz：弹幕位移用不到这么高的刷新，翻倍的主线程
+        // 布局写入只会和 VLC 的渲染抢时间。
+        l.preferredFramesPerSecond = 60
         l.add(to: .main, forMode: .common)
         link = l
     }
@@ -315,18 +318,24 @@ final class VlcDanmakuOverlay: UIView {
 
         let label = dequeueLabel()
         /*
-         * 描边用 NSAttributedString 的 strokeWidth，不用 layer shadow：
-         * shadow 每帧都要离屏合成，几十条弹幕同时飞时是主要掉帧源
-         * （2026-11-27 真机实报"一顿一顿"）。负值 = 描边 + 填充。
+         * ★ 样式用「纯色字 + layer shadow」而不是 NSAttributedString 的负
+         * strokeWidth（2026-11-27 真机回归）：负描边是画在填充**之上**的，
+         * 6% 的字号宽度会把中文密笔画的内芯整个盖掉 —— 屏幕上一片发脏的
+         * 灰边字，用户直接说"弹幕样式坏了"。shadow 才是之前验收过的观感：
+         * 1pt 软黑边、笔画完整。
+         * 掉帧问题不在这里解决，而是靠 dequeueLabel 里的 shouldRasterize
+         * （阴影烘进位图，移动时只做合成，不每帧重画模糊）。
          */
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: item.color.withAlphaComponent(opacity),
-            .strokeColor: UIColor.black.withAlphaComponent(opacity * 0.85),
-            .strokeWidth: -6.0,
-        ]
-        label.attributedText = NSAttributedString(string: item.text, attributes: attrs)
+        label.text = item.text
+        label.font = font
+        label.textColor = item.color.withAlphaComponent(opacity)
+        label.layer.shadowColor = UIColor.black.withAlphaComponent(opacity * 0.85).cgColor
+        label.layer.shadowRadius = 1
+        label.layer.shadowOffset = .zero
+        label.layer.shadowOpacity = 1
         label.alpha = 1
+        // 位图按当前屏幕倍率烘：@2x/@3x 上不糊（overlay 已入窗口，scale 是准的）
+        label.layer.rasterizationScale = contentScaleFactor > 1 ? contentScaleFactor : 2
         let fit = label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude,
                                             height: CGFloat.greatestFiniteMagnitude))
         let w = fit.width.rounded(.up) + 2
@@ -427,13 +436,21 @@ final class VlcDanmakuOverlay: UIView {
         l.isUserInteractionEnabled = false
         l.numberOfLines = 1
         l.lineBreakMode = .byClipping
+        /*
+         * 把「字 + 阴影」烘成一张位图：之后每帧只改 layer.position，
+         * 不重新做阴影的离屏模糊（弹幕几十条同时飞时这是最大的 GPU 开销）。
+         * rasterizationScale 跟屏幕走，否则 @2x/@3x 上会糊。
+         */
+        l.layer.shouldRasterize = true
+        l.layer.rasterizationScale = contentScaleFactor > 0 ? contentScaleFactor : 2
         return l
     }
 
     private func recycle(_ l: UILabel) {
         l.removeFromSuperview()
         l.alpha = 1
-        if pool.count < 96 { pool.append(l) }
+        // 池上限按"同时在场"量级给：每条位图随字号增长，池开太大白占显存
+        if pool.count < 40 { pool.append(l) }
     }
 
     // MARK: - 解析

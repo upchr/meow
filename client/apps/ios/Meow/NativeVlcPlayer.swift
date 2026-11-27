@@ -111,23 +111,14 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         view.backgroundColor = .black
         buildVideoLayer()
         /*
-         * 点屏切换控制条。★ 手势必须挂在 **view** 上，不能挂在 controls 上：
-         * controls 一旦 isHidden，它自己的手势跟着失效，用户就再也呼不出控制条
-         * —— 2026-11-27 真机实报「返回/状态栏都呼不出，只能强退」。
-         * cancelsTouchesInView=false 让按钮、进度条、控制层网页照常收到触摸。
-         *
-         * <p>web 控制层模式同样需要它：控制栏隐藏时整个 WKWebView 会被收起来
-         * （`bar=0`，省合成），这时只有这条手势能把用户的一拳转成"放出
-         * WebView + 让网页亮出控制栏"（`toggleControls` 里有 isHidden 守卫，
-         * WebView 可见时它是空操作，不会跟网页自己的点屏逻辑打架）。
-         */
-        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
-        tap.cancelsTouchesInView = false
-        view.addGestureRecognizer(tap)
-        /*
          * 控制层二选一（2026-11-27）：
          *   有 controlURL → 透明 WKWebView 加载播放页 native 模式（图一同一套 UI）
          *   没有 → 退回内置 Swift 控制条（老路径，只作兜底）
+         *
+         * ★ 点屏手势只在"内置控制条"模式下挂（见 buildControls）。web 控制层
+         * 模式下**不要**在根视图上挂 UITapGestureRecognizer：全屏 WebView 才是
+         * 唯一的控件来源，祖先手势会参与触摸仲裁（延迟 touchesEnded / 与网页
+         * 自己的点屏逻辑抢），2026-11-27 真机回归就死在这类"双通道"上。
          */
         if useWebControls {
             setupControlWebView()
@@ -327,14 +318,15 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
             ShellOrientation.apply(value as? String ?? "")
         case "bar":
             /*
-             * 控制栏显隐（2026-11-27 性能修复）。
+             * 控制栏显隐 → 只调「状态推送频率」，**不隐藏 WebView**。
              *
-             * 透明 WebView 一直挂着会持续参与合成：叠在 VLC 画面之上，iOS 每帧
-             * 都要重算两层 → 弹幕掉帧、"看着卡"。控制栏不可见时直接 isHidden，
-             * 视频/弹幕就回到纯原生渲染（弹幕由 VlcDanmakuOverlay 画）。
+             * ★ 2026-11-27 真机回归（已回退）：把透明 WebView 整个 isHidden 后，
+             * 点屏唤回要走「原生手势 → 放出 WebView → 调网页钩子」三跳，
+             * 真机上这条链没跑通 —— 用户看到的是"控制栏和返回按钮再也呼不出来"，
+             * 只能强退。控制层的 DOM 就是唯一的控件来源，**不能把它藏起来**。
+             * 合成开销改由「隐藏时 1Hz 推状态」来省（见 tick 里的 barVisible）。
              */
-            let on = (value as? NSNumber)?.boolValue ?? true
-            controlWebView?.isHidden = !on
+            controlBarVisible = (value as? NSNumber)?.boolValue ?? true
         case "volume":
             // 网页改不了 iOS 系统音量，交给 MPVolumeView
             SystemVolume.set((value as? NSNumber)?.intValue ?? 0)
@@ -476,7 +468,15 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         controls.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(controls)
 
-        // 点屏手势已在 viewDidLoad 统一挂到 view 上（两种控制层模式共用）
+        /*
+         * 点屏切换控制条。★ 手势必须挂在 **view** 上，不能挂在 controls 上：
+         * controls 一旦 isHidden，它自己的手势跟着失效，用户就再也呼不出控制条
+         * —— 2026-11-27 真机实报「返回/状态栏都呼不出，只能强退」。
+         * cancelsTouchesInView=false 让按钮、进度条照常收到触摸。
+         */
+        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
+        tap.cancelsTouchesInView = false
+        view.addGestureRecognizer(tap)
 
         // 顶部：返回 + 标题
         topBar.translatesAutoresizingMaskIntoConstraints = false
@@ -617,6 +617,8 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
     private var lastUnmutedVolume = 0
     /// 当前媒体地址：`open` 收到同一地址时不重开（重开会把进度打回 0）
     private var currentMediaUrl = ""
+    /// 控制栏是否可见（web 控制层通过 `bar` 指令上报）。只影响状态推送频率
+    private var controlBarVisible = true
 
     private func applyPendingSeekIfNeeded() {
         guard pendingSeekMs > 0 else { return }
@@ -761,10 +763,12 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
          * 状态推送降频（2026-11-27 真机实报「弹幕很卡顿」）：
          * evaluateJavaScript 是主线程工作，4Hz 一直跑会和弹幕合成抢 CPU。
          * 控制栏可见时要顺滑（4Hz），隐藏时 1Hz 够了。
+         *
+         * <p>可见性来自 web 的 `bar` 指令（**不再**用 WebView 的 isHidden ——
+         * 那条路会让控制层摸不到，2026-11-27 真机回归已回退）。
          */
         tickCount += 1
-        let barVisible = controlWebView?.isHidden == false
-        let every = barVisible ? 1 : 4
+        let every = controlBarVisible ? 1 : 4
         if tickCount % every == 0 || !readyOnce { pushState() }
 
         switch player.state {
@@ -875,8 +879,9 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
             return
         }
         /*
-         * web 控制层模式：只在"控制层已经隐藏"时响应 —— 显示它并让 web 亮出控制栏。
-         * 控制层可见时的点击由 web 自己处理（它负责控制栏的显隐与浮层）。
+         * web 控制层模式：控制层永远可见（2026-11-27 真机回归后不再 isHidden），
+         * 点击全部交给 web 自己处理（它负责控制栏的显隐与浮层）。这里的 isHidden
+         * 守卫保留成"万一以后又重新隐藏"时的安全网。
          */
         if useWebControls {
             guard let w = controlWebView, w.isHidden else { return }

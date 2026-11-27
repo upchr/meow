@@ -185,7 +185,7 @@ describe('透明 WebView 控制层', () => {
       expect(PLAYER).toContain(`case ${op}:`)
     }
     expect(PLAYER).toContain('pushState()')
-    expect(PLAYER).toContain('let barVisible = controlWebView?.isHidden == false')
+    expect(PLAYER).toContain('let every = controlBarVisible ? 1 : 4')
   })
 
   it('原生侧：控制层地址 = 父页地址 + native=1（复用同一组参数）', () => {
@@ -347,14 +347,24 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(DANMAKU).toContain('private func staticRow(')
   })
 
-  it('弹幕：60fps 插值（displayLink），不再 4Hz UIView.animate + shadow', () => {
+  it('弹幕：60fps 插值（displayLink），不再 4Hz UIView.animate', () => {
     expect(DANMAKU).toContain('CADisplayLink')
     expect(DANMAKU).toContain('CACurrentMediaTime()')
     expect(DANMAKU).toContain('CATransaction.setDisableActions(true)')
     expect(DANMAKU).not.toContain('UIView.animate(withDuration: 0.26')
-    expect(DANMAKU).not.toContain('label.layer.shadow')
     // 播放器只推校准锚点 + 播放状态 + 倍速
     expect(PLAYER).toContain('danmaku.tick(positionMs: Int(cur), playing: player.isPlaying')
+  })
+
+  it('弹幕样式：纯色字 + layer shadow（负描边会把中文笔画吃掉，已回退）', () => {
+    // 2026-11-27 真机回归：NSAttributedString 负 strokeWidth 画在填充之上，
+    // 中文密笔画内芯被盖 → 屏幕上是一片发脏的灰边字。
+    expect(DANMAKU).not.toContain('strokeWidth: -6.0')
+    expect(DANMAKU).toContain('label.layer.shadowColor')
+    expect(DANMAKU).toContain('label.layer.shadowRadius = 1')
+    // 掉帧靠位图缓存解决：阴影烘进 raster cache，移动时只做合成
+    expect(DANMAKU).toContain('shouldRasterize = true')
+    expect(DANMAKU).toContain('rasterizationScale')
   })
 
   it('弹幕：按视频实际显示区域裁剪（不飘黑边，区域设置才真的生效）', () => {
@@ -363,16 +373,17 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(PLAYER).toContain('danmaku.setViewport(videoRect())')
   })
 
-  it('控制层收起省合成：锁定/面板/跳过片头时不能收（否则用户点不到）', () => {
+  it('控制栏显隐只降频，不隐藏 WebView（隐藏过=控制栏再也呼不出来，已回退）', () => {
     expect(LAYER).toContain('const nativeLayerIdle = computed(')
     expect(LAYER).toContain("iosNativeCmd('bar', idle ? 0 : 1)")
     expect(LAYER).toContain('!locked.value')
     expect(LAYER).toContain('!anyPanelOpen.value')
     expect(LAYER).toContain('!inIntro.value')
-    // 收起后点屏能唤回：原生放出 WebView 并调网页钩子（手势必须挂在 view 上）
-    expect(PLAYER).toContain('__meowVlcShowBar')
-    expect(PLAYER).toContain('tap.cancelsTouchesInView = false')
-    expect(LAYER).toContain('__meowVlcShowBar')
+    // ★ 2026-11-27 真机回归：isHidden 过的 WebView 就是唯一的控件来源，
+    // 藏起来以后点屏唤回链没跑通 → 底部控制栏/返回按钮彻底消失。
+    expect(PLAYER).not.toContain('controlWebView?.isHidden = !on')
+    expect(PLAYER).toContain('controlBarVisible = (value as? NSNumber)?.boolValue')
+    expect(PLAYER).toContain('let every = controlBarVisible ? 1 : 4')
   })
 
   it('原生退出后不再黑屏：给出继续 / 下一集 / 返回三个出口', () => {
