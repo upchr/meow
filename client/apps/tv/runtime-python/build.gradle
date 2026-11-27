@@ -24,6 +24,22 @@ android {
     namespace 'com.meow.runtime.python'
     compileSdk 34
 
+    /*
+     * ★ pyrt.py 只有一份真源：`server/pyrt/pyrt.py`（2026-11-28 修）。
+     *
+     *   以前模块里自带一份 fork（`src/main/python/pyrt.py`），长期漂移 —— 实测与
+     *   真源差 165 行，缺 `X-DRPY-Api` 的 unquote 与远端脚本拉取，于是 TV 上所有
+     *   .py 源都报 `py script not found`（2026-11-28 在 .77 上定死）。
+     *
+     *   现在构建期从真源复制到 build/ 生成目录，Chaquopy 的 python 源集只读那里。
+     *   不要再往 `src/main/python/` 放 pyrt.py —— 放回去就又成了一份 fork。
+     */
+    sourceSets {
+        main {
+            python.srcDirs = [layout.buildDirectory.dir('generated/python')]
+        }
+    }
+
     defaultConfig {
         applicationId "com.meow.runtime.python"
         minSdk 26
@@ -149,4 +165,21 @@ chaquopy {
 dependencies {
     // 运行时模块接口（宿主与本模块各编一份，靠类名+签名对齐）
     implementation project(':plugin-api')
+}
+
+/*
+ * pyrt.py 构建期同步（唯一真源 = server/pyrt/pyrt.py）。
+ * 模块在 client/apps/tv/runtime-python，rootProject 是 client/apps/tv，
+ * 所以 ../../../server/pyrt/pyrt.py 才是仓库根下的 server/pyrt。
+ *
+ * 用 configureEach 挂到所有名字带 Python 的任务上（Chaquopy 的 prepare* /
+ * merge*Python* / generate*Python*Assets 都在里面），别只挂 preBuild ——
+ * 那些任务不保证以 preBuild 为前置。
+ */
+tasks.register('syncPyrtPayload', Copy) {
+    from rootProject.file('../../../server/pyrt/pyrt.py')
+    into layout.buildDirectory.dir('generated/python')
+}
+tasks.configureEach { t ->
+    if (t.name.contains('Python')) t.dependsOn('syncPyrtPayload')
 }

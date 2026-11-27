@@ -119,7 +119,8 @@ TV 端有 DexClassLoader 钩子，重复安装会把钩子顶掉，导致 jar �
 |---|---|---|
 | 站点名在 `NativeSources` | 内置实现（如豆瓣） | `NativeSources` |
 | `http(s)://...` 开头 | 苹果 CMS 直连（**不看 `type`**） | `CmsSource` |
-| 以 `.js`/`.py` 结尾、`js:`/`py:`/`node:` 开头 | drpy 运行时（Node） | 转发到 `policy.json` 的 `jsRuntime` |
+| 以 `.js` 结尾、`js:`/`node:` 开头 | 脚本运行时（JS） | 转发到 `policy.json` 的 `jsRuntime` |
+| 以 `.py` 结尾、`py:` 开头 | 脚本运行时（PY） | 优先 `policy.json` 的 `pyRuntimeAddr`，未配才回落 `jsRuntime` |
 | 其余（`csp_XXX`） | spider jar（反射 `crawler.Spider`） | `call()` 的 jar 分支 |
 
 分派顺序是**原生源 → CMS → drpy → jar**，前一个能处理就不看后面的（`call()`，

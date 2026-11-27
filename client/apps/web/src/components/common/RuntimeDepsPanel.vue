@@ -8,10 +8,13 @@
  * 同一个问题在不同端的形态。
  *
  * <p>各端形态：
- *   - TV：独立安装的 Python 模块（`py-runtime.json`）+ 内置 QuickJS
  *   - PC：插件型（drpy / pyrt），由「本机插件」安装与启停
  *   - fpk：meowd 探测到的 java/node/python 可执行文件
  *   - iOS：端内 nodejs-mobile（drpy）+ 内嵌 CPython；启动状态写在 policy.pyRuntime
+ *
+ * <p>★ TV 不再走这里（2026-11-28）：TV 的 Node 运行时 / Python 运行时 / 弹幕组件
+ * 三块在设置页里各带安装与检查按钮，同一份状态在面板里再画一次会重复，
+ * 所以设置页对 TV 不渲染本组件（见 `v-if="!tvModule"`）。
  *
  * <p>★ 只展示 + 引导，不做安装：fpk 装依赖要网关权限（5666），
  * PC 插件要走插件管理器，TV 模块要下载 60MB APK —— 跨端口/跨层的安装动作
@@ -20,7 +23,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { rescanFpkDeps, shellInfo, type FpkDepInfo, type FpkDeps } from '@/api/fpkUpgrade'
 import { isDesktopShell, isIosShell, isTvShell } from '@/compat/shell'
-import { tvPyRuntime } from '@/api/nativeBridge'
 import { fetchPolicy, request, type PluginInfo } from '@/api'
 
 const props = defineProps<{
@@ -32,11 +34,9 @@ const emit = defineEmits<{ (e: 'goto', selector: string): void }>()
 const loading = ref(false)
 const error = ref('')
 const deps = ref<FpkDeps | null>(null)
-/** 'fpk' = 飞牛（java/node/python 三件套）；'tv' = TV 的 Python 模块；
- *  'ios' = IPA（端内 CPython + drpy）；'desktop' = PC 插件型运行时；null = 不显示 */
-const mode = ref<'fpk' | 'tv' | 'ios' | 'desktop' | null>(null)
-/** TV 的 Python 模块状态（py-runtime.json） */
-const pyState = ref<Record<string, unknown> | null>(null)
+/** 'fpk' = 飞牛（java/node/python 三件套）；'ios' = IPA（端内 CPython + drpy）；
+ *  'desktop' = PC 插件型运行时；null = 不显示（TV 由设置页自己的块负责） */
+const mode = ref<'fpk' | 'ios' | 'desktop' | null>(null)
 /** iOS：运行时地址 + 宿主探测 + 端内 Python 启动状态（policy.pyRuntime） */
 interface PyRuntimeState {
   state?: string
@@ -193,17 +193,6 @@ async function refresh(): Promise<void> {
       }
       return
     }
-    // TV 壳：不查 meowd，直接读桥里的 Python 模块状态
-    if (isTvShell()) {
-      mode.value = 'tv'
-      pyState.value = tvPyRuntime()
-      // 桥在 WebView 注入完成前可能还没有这个方法；没拿到就再等一拍
-      if (!pyState.value) {
-        await new Promise((r) => setTimeout(r, 600))
-        pyState.value = tvPyRuntime()
-      }
-      return
-    }
     // PC：运行时就是插件，状态由设置页的 boot_info 提供（不重复发请求）
     if (isDesktopShell()) {
       mode.value = 'desktop'
@@ -236,10 +225,6 @@ async function rescan(): Promise<void> {
   try {
     if (mode.value === 'ios' || mode.value === 'desktop') {
       await refresh()
-      return
-    }
-    if (mode.value === 'tv') {
-      pyState.value = tvPyRuntime()
       return
     }
     deps.value = await rescanFpkDeps()
@@ -338,37 +323,6 @@ onBeforeUnmount(() => {
           去配置
         </button>
       </div>
-    </div>
-  </template>
-
-  <!-- ── TV：Python 运行时模块（QuickJS 跑 .js，模块跑 .py） ── -->
-  <template v-if="mode === 'tv' && pyState">
-    <div class="set-sub" data-runtime-deps>
-      <span class="font-medium text-ink-2">Python 模块</span>
-      <span class="text-[length:var(--fs-mini)] text-ink-3">
-        <template v-if="pyState.running">运行中 · 端口 {{ pyState.port }}</template>
-        <template v-else-if="pyState.error">{{ pyState.error }}</template>
-        <template v-else>未运行</template>
-      </span>
-      <span class="flex-1" />
-      <button
-        class="rounded-md bg-card px-2.5 py-1 text-[length:var(--fs-mini)] hover:bg-card-hover"
-        :disabled="loading"
-        @click="rescan()"
-      >
-        {{ loading ? '检测中…' : '重新检测' }}
-      </button>
-    </div>
-    <div class="pb-3 text-[length:var(--fs-xs)]">
-      <p class="text-ink-3">
-        Python 模块 v{{ pyState.version || '?' }}：
-        <span :class="pyState.running ? 'text-ok' : 'text-hot'">
-          {{ pyState.running ? '已就绪，.py 源可在本机执行' : '未就绪，.py 源需连远端 pyrt 或安装模块' }}
-        </span>
-      </p>
-      <p class="mt-1 text-[length:var(--fs-mini)] text-ink-3/70">
-        `.js` 由内置 QuickJS 执行；`.py` 由这个模块执行（没装则整类源不可用）。
-      </p>
     </div>
   </template>
 

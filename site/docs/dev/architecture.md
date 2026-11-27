@@ -380,10 +380,24 @@ JVM 在**导入配置时**由 `core/Dex2Jvm` 把只有 `classes.dex` 的 jar 转
 写回 `spiderJvm` / 站点 `jar`（实验性，需 `MEOW_DEX2JAR`；失败保留原配置并返回原因）。
 **不要把 okhttp 打进 dex**（重复类 + 方法数爆）；**不要用 `d8` 覆盖同名类**（必须走 smali）。
 
-### 4.2 drpy（外部 Node 运行时）
+### 4.2 脚本运行时（JS / PY 两个引擎，分开路由）
 
-`api` 以 `.js` / `js:` / `node:` / `.py` / `py:` 开头时转发到外部 Node 服务
-（`policy.jsRuntime` 或 `MEOW_JS_RUNTIME`）：
+`api` 以 `.js` / `js:` / `node:` / `.py` / `py:` 开头时转发到外部脚本服务。
+**2026-11-28 起两层引擎分键**（中期分层）：
+
+| 源的类型 | 目标地址 | 缺省行为 |
+|---|---|---|
+| `.js` / `js:` / `node:` | `policy.jsRuntime`（或 `MEOW_JS_RUNTIME`）→ drpy / QuickJS | 无回落 |
+| `.py` / `py:` | `policy.pyRuntimeAddr`（或 `MEOW_PY_RUNTIME`）→ pyrt | 未配置时回落到 `jsRuntime`（老部署：pyrt 同时服务 .py 并把 .js 转发给 drpy；iOS 端内也是这个形态） |
+
+独立 Python 引擎连接被拒时**再回落一次 `jsRuntime`**，两条都不可达才报错 ——
+所以"卸载/停掉 pyrt"只会让 `.py` 报错，绝不会把 `.js` 带死。
+
+> ★ 键名是 `pyRuntimeAddr` 不是 `pyRuntime`：iOS 壳用 `policy.pyRuntime`
+> 存 Python 启动状态对象（`{state,error,at}`，见 `client/apps/ios/Meow/PythonRuntime.swift`）。
+> 地址与状态必须分键，合并 iOS 分支时不要改回 `pyRuntime`。
+
+请求协议（两个引擎相同）：
 
 ```
 POST {base}/{urlencode(site)}/{urlencode(action)}

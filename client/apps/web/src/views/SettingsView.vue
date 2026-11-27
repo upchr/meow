@@ -3442,7 +3442,12 @@ onMounted(() => {
 const showRuntimeNav = computed(() => (tvMode && tvModule) || ios || fpkShell.value)
 const runtimeHint = computed(() => {
   if (ios) return '端内 drpy + CPython · .js/.py 源本机执行'
-  if (tvMode) return 'Python 模块 · .js 由 QuickJS、.py 由模块执行'
+  /*
+   * ★ 2026-11-28 修正措辞：原来写「Python 模块 · .js 由 QuickJS、.py 由模块执行」，
+   *   但分区里第一块是 **Node 运行时**（跑 danmu_api），用户看着标题以为装的是
+   *   Python 模块。三块统一按「谁执行什么」写清楚。
+   */
+  if (tvMode) return 'Node 运行时（弹幕）· QuickJS（.js）· Python 运行时（.py）'
   return 'meowd 探测到的本机 java / node / python'
 })
 
@@ -4494,7 +4499,17 @@ function phaseClass(p: PluginInfo['phase']) {
  *   不能随意改。改显示层零风险。
  */
 const PLUGIN_ORDER = ['apiserver', 'danmu-api', 'ffmpeg', 'node', 'drpy', 'pyrt']
-const PLUGIN_LABELS: Record<string, string> = { node: 'Node 环境' }
+/*
+ * 显示名统一（2026-11-28 用户口径）：**引擎叫「X 运行时」，业务包叫「X 组件」**。
+ * 同一件东西四端共用一个名字，别再出现 PC「弹幕聚合服务」/ TV「弹幕组件」
+ * 或 PC「Python 脚本运行时」/ TV「Python 运行时」这种同物异名。
+ */
+const PLUGIN_LABELS: Record<string, string> = {
+  'danmu-api': '弹幕组件',
+  node: 'Node 运行时',
+  drpy: 'drpy 运行时',
+  pyrt: 'Python 运行时',
+}
 /** 运行时职责标识：谁服务 .js、谁服务 .py（pyrt 还负责把 .js 转发给 drpy） */
 const RUNTIME_BADGES: Record<string, string> = { drpy: 'JS', pyrt: 'PY' }
 
@@ -6540,7 +6555,28 @@ onBeforeUnmount(() => {
 
       <!-- TV 的模块安装/启停/卸载（其它端没有这层） -->
       <template v-if="tvMode && tvModule">
-      <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+      <!--
+        x86_64（模拟器 / 部分盒子）能力说明（2026-11-28）：内置 JS 引擎来自上游
+        AAR，只带 arm64-v8a / armeabi-v7a 的 libquickjs-wrapper.so，仓库里没有
+        wrapper 源码 → 编不出 x86_64 版本。不说清楚的话用户会以为"源坏了"。
+      -->
+      <p
+        v-if="/^x86/.test(String(modState.abi || ''))"
+        class="mt-1 rounded-md bg-field px-2.5 py-1.5 text-[11px] leading-relaxed text-ink-3"
+      >
+        本机架构 <code>{{ modState.abi }}</code>：内置 JS 引擎只有 ARM 版本，
+        <code>.js</code> 源在本机不可用；<code>.py</code> 源不受影响。
+      </p>
+      <!--
+        ★ 补小标题（2026-11-28 用户实测）：这一块是 **Node 运行时**（跑弹幕服务
+          danmu_api）。原来没有标题，用户直接把它读成了分区那句"Python 模块"。
+          三块统一成「X 运行时 / X 组件」：Node 运行时 · Python 运行时 · 弹幕组件。
+      -->
+      <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span class="text-xs font-medium text-ink-2">Node 运行时</span>
+        <span class="text-[11px] text-ink-3">以模块形式安装 · 弹幕服务（danmu_api）跑在它上面</span>
+      </div>
+      <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
         模块约 60MB，按 CPU 架构单独安装；下载源与令牌沿用「更新」设置。
       </p>
       <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
@@ -6610,7 +6646,7 @@ onBeforeUnmount(() => {
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
           约 20MB。装它之前 <code>.py</code> 源会提示「需要 Python 运行时」；
           装好后本机网关会把它接管为脚本运行时（同时继续服务 <code>.js</code>）。
-          仅 arm64 / armeabi-v7a 设备可用。
+          按 CPU 架构装对应包（arm64 / armeabi-v7a / x86_64）。
         </p>
         <p v-if="pyModState.error" class="mt-1.5 text-[11px] text-ink-3">
           最近错误：{{ pyModState.error }}
@@ -6662,10 +6698,11 @@ onBeforeUnmount(() => {
       <!--
         各端运行时状态（同一组件按壳形态切换）：
           iOS → 端内 drpy + CPython（policy.pyRuntime 给启动结果）
-          TV  → Python 模块是否就绪
           fpk → java/node/python 三个可执行文件
+        ★ TV 不再渲染（2026-11-28）：上面三块（Node 运行时 / Python 运行时 /
+          弹幕组件）已经各带安装与检查按钮，面板再画一遍 Python 状态就是重复。
        -->
-      <div :class="tvMode && tvModule ? 'mt-3 border-t border-line pt-3' : ''">
+      <div v-if="!tvModule">
         <RuntimeDepsPanel :plugins="plugins" @goto="gotoSelector" />
       </div>
 

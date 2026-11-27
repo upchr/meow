@@ -41,6 +41,7 @@
       "script": "server/build-plugin-danmu.ps1",
       "required": false,
       "needs": "",
+      "requiresPlugins": ["node"],
       "why": "上游源码不随公开库分发；公开构建跳过，不阻断其它插件"
     },
     {
@@ -48,6 +49,7 @@
       "chain": "plugins",
       "script": "server/build-plugin-drpy.ps1",
       "required": true,
+      "requiresPlugins": ["node"],
       "why": "drpy/Node 运行时，200+ 个 .js 源依赖它"
     },
     {

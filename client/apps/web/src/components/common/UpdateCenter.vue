@@ -29,6 +29,7 @@ import {
   checkFpk,
   checkModule,
   checkPlugins,
+  checkPython,
   checking,
   errors,
   fpkChecked,
@@ -36,6 +37,7 @@ import {
   fpkLatest,
   fpkVisible,
   hydrateModuleState,
+  hydratePythonState,
   hasTvModule,
   isTvShell,
   lastCheckedAt,
@@ -55,6 +57,11 @@ import {
   pluginConfigured,
   pluginInstalledCount,
   pluginUpdates,
+  pythonChecked,
+  pythonCurrent,
+  pythonInstalled,
+  pythonLatest,
+  pythonUpdateChecked,
 } from '@/stores/updateCenter'
 
 /** 跨区跳转交给宿主页面（见 scrollTo 的注释） */
@@ -104,6 +111,22 @@ const moduleLabel = computed(() => {
   if (moduleLatest.value) return `发现 v${moduleLatest.value.version}`
   return '已是最新'
 })
+/** Python 运行时模块：老壳没有 pyModule 桥时整行不显示（见模板 v-if） */
+const hasPythonModule = computed(() => {
+  try {
+    return typeof (window as unknown as { meowTv?: any }).meowTv?.pyModuleState === 'function'
+  } catch {
+    return false
+  }
+})
+const pythonLabel = computed(() => {
+  if (checking.python) return '检查中…'
+  if (!pythonChecked.value) return '未检查'
+  if (!pythonInstalled.value) return '未安装'
+  if (!pythonUpdateChecked.value) return '未检查'
+  if (pythonLatest.value) return `发现 v${pythonLatest.value.version}`
+  return '已是最新'
+})
 const pluginLabel = computed(() => {
   if (checking.plugins) return '检查中…'
   if (!desktop) return '仅 PC'
@@ -130,7 +153,7 @@ const scopeLabel = computed(() =>
   updPlatform.value === 'ios'
     ? 'iOS 侧载版'
     : tvModule
-      ? '壳 / 运行时模块 / 弹幕组件'
+      ? '壳 / Node·Python 运行时 / 弹幕组件'
       : desktop
         ? '壳 / 本机插件'
         : capability.value === 'none'
@@ -151,7 +174,8 @@ const lastParts = computed(() => {
   if (updPlatform.value !== 'web' && updChecked.value) {
     parts.push(`${updPlatform.value === 'ios' ? 'iOS' : '壳'} ${lastText('app')}`)
   }
-  if (tvModule && moduleUpdateChecked.value) parts.push(`模块 ${lastText('module')}`)
+  if (tvModule && moduleUpdateChecked.value) parts.push(`Node 运行时 ${lastText('module')}`)
+  if (tvModule && pythonUpdateChecked.value) parts.push(`Python 运行时 ${lastText('python')}`)
   if (desktop && pluginChecked.value) parts.push(`插件 ${lastText('plugins')}`)
   if (!desktop && !tv && fpkVisible.value && fpkChecked.value) {
     parts.push(`fpk ${lastText('fpk')}`)
@@ -171,7 +195,7 @@ function fmtSize(n: number): string {
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`
 }
 
-function lastText(kind: 'app' | 'module' | 'plugins' | 'fpk'): string {
+function lastText(kind: 'app' | 'module' | 'python' | 'plugins' | 'fpk'): string {
   const t = lastCheckedAt[kind]
   if (!t) return '未检查'
   const mins = Math.max(0, Math.round((Date.now() - t) / 60000))
@@ -201,7 +225,13 @@ async function refreshAll(): Promise<void> {
   if (busyAll.value) return
   busyAll.value = true
   try {
-    await Promise.allSettled([checkAppNow(), checkModule(false), checkPlugins(false), checkFpk(false)])
+    await Promise.allSettled([
+      checkAppNow(),
+      checkModule(false),
+      checkPython(false),
+      checkPlugins(false),
+      checkFpk(false),
+    ])
   } finally {
     busyAll.value = false
   }
@@ -249,6 +279,7 @@ onMounted(() => {
   // 「当前 v1.2.7 · 发现 v1.2.11」的自相矛盾（2026-11-16 用户截图）。
   // 索引有 60s 缓存，与下方区块共用，不会多打一份网络。
   hydrateModuleState()
+  hydratePythonState()
   void probeCapability().then((cap) => {
     if (cap === 'fpk' && !fpkChecked.value) void checkFpk(true)
     // TV / PC 连到 fnOS 后端：只读显示「NAS 上有新版」，不在客户端执行
@@ -297,9 +328,9 @@ onMounted(() => {
       <span v-if="updError || errors.app" class="text-[10px] text-hot">{{ updError || errors.app }}</span>
     </div>
 
-    <!-- TV 运行时模块 -->
+    <!-- TV Node 运行时模块（跑 danmu_api） -->
     <div v-if="tvModule" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="module">
-      <span class="w-24 shrink-0 text-[11px] text-ink-2">运行时模块</span>
+      <span class="w-24 shrink-0 text-[11px] text-ink-2">Node 运行时</span>
       <span class="font-mono text-[11px] text-ink-3">{{ moduleCurrent || '—' }}</span>
       <span class="text-[11px] text-ink-3">{{ moduleLabel }}</span>
       <span v-if="moduleLatest" class="text-[11px] text-ink-3">{{ fmtSize(moduleLatest.size) }}</span>
@@ -327,6 +358,42 @@ onMounted(() => {
         检查
       </button>
       <span v-if="errors.module" class="text-[10px] text-hot">{{ errors.module }}</span>
+    </div>
+
+    <!-- TV Python 运行时模块（.py 源；与 Node 模块是两条独立版本线） -->
+    <div
+      v-if="tvModule && hasPythonModule"
+      class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2"
+      data-update-row="python"
+    >
+      <span class="w-24 shrink-0 text-[11px] text-ink-2">Python 运行时</span>
+      <span class="font-mono text-[11px] text-ink-3">{{ pythonCurrent || '—' }}</span>
+      <span class="text-[11px] text-ink-3">{{ pythonLabel }}</span>
+      <span v-if="pythonLatest" class="text-[11px] text-ink-3">{{ fmtSize(pythonLatest.size) }}</span>
+      <span class="flex-1" />
+      <button
+        v-if="pythonLatest"
+        class="rounded-md bg-accent px-2.5 py-1 text-[11px] text-on-accent"
+        @click="scrollTo('[data-py-runtime]')"
+      >
+        去更新
+      </button>
+      <button
+        v-else-if="pythonChecked && !pythonInstalled"
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover"
+        @click="scrollTo('[data-py-runtime]')"
+      >
+        去安装
+      </button>
+      <button
+        v-else-if="!pythonUpdateChecked || errors.python"
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+        :disabled="checking.python"
+        @click="checkPython(false)"
+      >
+        检查
+      </button>
+      <span v-if="errors.python" class="text-[10px] text-hot">{{ errors.python }}</span>
     </div>
 
     <!-- TV 弹幕组件（载荷）：与运行时模块分开装、分开升版本 -->
@@ -466,7 +533,7 @@ onMounted(() => {
       </label>
       <label v-if="tvModule" class="flex items-center gap-1 text-ink-2">
         <input type="checkbox" :checked="auto.module" @change="toggleAuto('module', ($event.target as HTMLInputElement).checked)" />
-        模块
+        运行时
       </label>
       <label v-if="desktop" class="flex items-center gap-1 text-ink-2">
         <input type="checkbox" :checked="auto.plugins" @change="toggleAuto('plugins', ($event.target as HTMLInputElement).checked)" />
@@ -478,9 +545,9 @@ onMounted(() => {
       </label>
       <span class="text-[10px] text-ink-3">
         <template v-if="capability === 'fpk'">
-          模块/插件最多 24h 一次，只更新状态；fnOS 应用发现新版会弹框提示（不会自动下载）
+          运行时/插件最多 24h 一次，只更新状态；fnOS 应用发现新版会弹框提示（不会自动下载）
         </template>
-        <template v-else>模块/插件最多 24h 一次，只更新状态，不弹框</template>
+        <template v-else>运行时/插件最多 24h 一次，只更新状态，不弹框</template>
       </span>
     </div>
   </div>

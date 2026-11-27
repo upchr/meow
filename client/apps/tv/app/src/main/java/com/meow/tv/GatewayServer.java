@@ -991,7 +991,14 @@ public final class GatewayServer {
             org.json.JSONObject obj = cur == null || cur.trim().isEmpty()
                     ? new org.json.JSONObject() : new org.json.JSONObject(cur);
             String old = obj.optString("jsRuntime", "");
-            if (!old.isEmpty() && !isOurEphemeral(old)) {
+            /*
+             * ★ 2026-11-28 迁移：旧版把 pyrt 的地址写进 jsRuntime（单地址时代）。
+             *   现在 pyrt 只写 pyRuntimeAddr，jsRuntime 必须归 QuickJS —— 如果发现
+             *   jsRuntime 正好等于 pyRuntimeAddr（是我们自己人写的），按"我们的地址"
+             *   处理并抢回来。用户手配的其它地址仍然保留。
+             */
+            boolean oursLegacy = !old.isEmpty() && old.equals(obj.optString("pyRuntimeAddr", "").trim());
+            if (!old.isEmpty() && !isOurEphemeral(old) && !oursLegacy) {
                 android.util.Log.i(TAG, "jsRuntime: 保留已配置的运行时 " + old);
                 return;
             }
@@ -1141,11 +1148,11 @@ public final class GatewayServer {
                     }
                     int p = pythonStatePort(ctx);
                     if (p > 0) {
-                        takeoverJsRuntime(ctx, p);
+                        publishPyRuntimeAddr(ctx, p);
                         return;
                     }
                 }
-                android.util.Log.i(TAG, "python: 10 秒内未就绪，jsRuntime 保持 QuickJS");
+                android.util.Log.i(TAG, "python: 10 秒内未就绪，pyRuntimeAddr 不写（.py 源暂时不可用）");
             }, "meow-py-watch").start();
         } catch (Throwable t) {
             android.util.Log.w(TAG, "startPythonRuntime failed", t);
@@ -1166,24 +1173,76 @@ public final class GatewayServer {
         }
     }
 
-    /** 把 jsRuntime 改指 Python 端口（沿用"只在空/本机临时端口时覆盖"的规则）。 */
-    private static void takeoverJsRuntime(Context ctx, int port) {
+    /**
+     * 把 `pyRuntimeAddr` 指向 Python 模块端口（2026-11-28 中期分层）。
+     *
+     * <p>以前这里写的是 **jsRuntime**（单地址时代：pyrt 抢全局地址，再把 .js 转发给
+     * QuickJS）。两个引擎分键之后：
+     * <ul>
+     *   <li>{@code jsRuntime} → QuickJS（本类 ensureLocalJsRuntime 负责），.js 源直连</li>
+     *   <li>{@code pyRuntimeAddr} → Python 模块，.py 源直连</li>
+     * </ul>
+     * pyrt 在不在都不再影响 .js。
+     *
+     * <p>★ 键名是 pyRuntimeAddr 而不是 pyRuntime：iOS 壳用 `policy.pyRuntime`
+     * 存启动状态对象（{state,error,at}），地址与状态必须分键。
+     *
+     * <p>★ 这也是 TV .py 源"1.2.25 之后变哑"的根治：旧逻辑只在现有 jsRuntime 为空
+     * 或落在内核随机端口段（32768+）时才敢覆盖；而 QuickJS 改成固定 19381 之后
+     * 就不在那个段里了 → Python 永远抢不到 jsRuntime → 宿主拿 QuickJS 的 /health
+     * 问 py 能力得到 false，整类 .py 源判"不支持"（2026-11-28 在 .77 实测：
+     * /api/health 的 unsupported 里就是一堆 *_py）。
+     */
+    private static void publishPyRuntimeAddr(Context ctx, int port) {
         try {
             String cur = core.DataPaths.read("policy.json");
             org.json.JSONObject o = cur == null || cur.trim().isEmpty()
                     ? new org.json.JSONObject() : new org.json.JSONObject(cur);
             String local = "http://127.0.0.1:" + port;
-            String old = o.optString("jsRuntime", "");
+            String old = o.optString("pyRuntimeAddr", "").trim();
             if (local.equals(old)) return;
-            if (!old.isEmpty() && !isOurEphemeral(old)) {
-                android.util.Log.i(TAG, "python: 保留已配置的运行时 " + old);
+            // 只覆盖"本地"的旧值：用户手配的远端 py 引擎（NAS / adb reverse 到 PC）保留
+            boolean oldIsLocal = old.contains("127.0.0.1") || old.contains("localhost");
+            if (!old.isEmpty() && !oldIsLocal) {
+                android.util.Log.i(TAG, "python: 保留已配置的 pyRuntimeAddr " + old);
                 return;
             }
-            o.put("jsRuntime", local);
+            o.put("pyRuntimeAddr", local);
+            /*
+             * 迁移：旧版把自己写进了 jsRuntime。如果那里是我们自己的 Python 端口
+             * （127.0.0.1:19351..19370），删掉它 —— 下一次 ensureLocalJsRuntime 会把
+             * jsRuntime 抢回给 QuickJS。用户手配的 127.0.0.1:19331（adb reverse 到
+             * PC 的 pyrt）不在这个段里，保持不动。
+             */
+            String jsOld = o.optString("jsRuntime", "").trim();
+            boolean removedLegacy = false;
+            if (isPyModulePort(jsOld)) {
+                o.remove("jsRuntime");
+                removedLegacy = true;
+                android.util.Log.i(TAG, "python: 移除旧版写入的 jsRuntime(" + jsOld + ")，交还 QuickJS");
+            }
             boolean ok = core.DataPaths.write("policy.json", o.toString());
-            android.util.Log.i(TAG, "python: jsRuntime -> " + local + " written=" + ok);
+            android.util.Log.i(TAG, "python: pyRuntimeAddr -> " + local + " written=" + ok);
+            /*
+             * 删掉旧 jsRuntime 后必须**立刻**交还 QuickJS：ensureLocalJsRuntime 只在
+             * 网关启动时跑一次，等下次启动才补的话，本次会话里 .js 源会全报
+             * 「jsRuntime 未配置」（2026-11-28 在 .77 上实测到，立刻补调后正常）。
+             */
+            if (removedLegacy) ensureLocalJsRuntime(ctx);
         } catch (Throwable t) {
-            android.util.Log.w(TAG, "takeoverJsRuntime failed", t);
+            android.util.Log.w(TAG, "publishPyRuntimeAddr failed", t);
+        }
+    }
+
+    /** 是否是本机 Python 模块的地址（127.0.0.1:19351..19370，端口段见 QuickJsRuntimeServer 注释）。 */
+    private static boolean isPyModulePort(String addr) {
+        if (addr == null) return false;
+        if (!addr.contains("127.0.0.1") && !addr.contains("localhost")) return false;
+        try {
+            int port = java.net.URI.create(addr).getPort();
+            return port >= 19351 && port <= 19370;
+        } catch (Throwable t) {
+            return false;
         }
     }
 

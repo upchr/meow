@@ -346,14 +346,24 @@ danmu-api 的端口走环境变量而不是命令行：`"env": { "DANMU_API_PORT
 "health": "/health", "healthExpect": "\"ok\":true", "healthTimeoutMs": 20000,
 "env": { "DRPY_PORT": "{port}", "DRPY_STRIP_REMOTE": "1" },
 "inject": { "target": "{appData}/data/policy.json", "key": "jsRuntime",
-            "value": "http://127.0.0.1:{port}" }
+            "value": "http://127.0.0.1:{port}", "force": true }
 ```
+
+**两个运行时分两个键**（2026-11-28 中期分层）：drpy 独占 `jsRuntime`，pyrt 写
+`pyRuntimeAddr`（`.py` 源直连它）。两边都带 `"force": true`，但 force 只在
+"值指向另一个**本机**插件"时生效 —— 用户手配的局域网/NAS 地址永远不覆盖。
+pyrt 的 inject 示例见 `server/plugin-manifests/pyrt.manifest.json`
+（`"key": "pyRuntimeAddr"`）。
+
+> ★ 键名是 `pyRuntimeAddr` 不是 `pyRuntime`：iOS 壳用 `policy.pyRuntime`
+> 存 Python 启动状态对象。合并 iOS 分支时不要改回去。
 
 danmu-api 用同一套机制，健康端点就是一个真实弹幕查询
 （`/api/v2/fongmi/danmaku?name=test`），超时给到 90 秒（首次要拉聚合源）。
 
 后端接线（`server/host/src/shared/ApiServer.java`）：
-- 运行时地址取 `policy.json` 的 `jsRuntime`；容器可用 `MEOW_JS_RUNTIME` 兜底。
+- 运行时地址：`.js` 取 `policy.json` 的 `jsRuntime`（容器 `MEOW_JS_RUNTIME` 兜底）；
+  `.py` 优先 `pyRuntimeAddr`（容器 `MEOW_PY_RUNTIME`），未配才回落 `jsRuntime`。
 - `.js` 站点的动作转发到 `POST {jsRuntime}/{site}/{action}`，请求体原样，另带
   `X-DRPY-Api`（脚本地址）与 `X-DRPY-Ext`（ext 的 URL 编码）。运行时不需要
   反查站点表。

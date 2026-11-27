@@ -447,6 +447,14 @@ function New-Entry {
     }
 }
 
+# 自动生成的 desc 带**死版本号**（「猫窝插件 drpy 0.1.0」/「TV 运行时模块 arm64-v8a 18.20.4.1」），
+# 沿用旧 desc 会让说明永远停在第一次生成时 —— 实测清单里 drpy 实际 0.1.5、
+# desc 写着 0.1.0，用户看到的版本号对不上。只有人工写的说明（pyrt 那句）才沿用。
+function Test-AutoDesc([string]$d) {
+    if (-not $d) { return $true }
+    return ($d -match '^(猫窝插件|猫窝弹幕组件|TV 运行时模块|TV Python 运行时)\s')
+}
+
 function Find-Asset([string]$pattern) {
     $hit = $rel.assets | Where-Object { $_.name -like $pattern } |
         Sort-Object size -Descending | Select-Object -First 1
@@ -485,7 +493,35 @@ if ($scope -contains 'plugins') {
     # 插件 zip：apiserver-<ver>.zip / drpy-0.1.0.zip / ...
     # 它们的版本号各自独立（drpy 0.1.0、danmu 1.0.0），不能套用应用版本，
     # 所以从 zip 资产里按名字前缀匹配，版本从现有条目沿用（首次则从 manifest 读）。
+    #
+    # 运行时依赖（2026-11-28）：从 deploy/units.json 的 `requiresPlugins` 读。
+    #   PC 安装器本来就支持递归装依赖（installer.rs → for dep in entry.requires），
+    #   但清单里 requires 从来没被填过 → 装 drpy 不会带 Node，启动直接报
+    #   「找不到可执行文件：node（也没有可用的 fallback）」。声明放 units.json
+    #   （构建单元唯一真源），这里只做「构建 id → 包 id」的映射。
+    $unitsDeps = @{}
+    $unitsPath = Join-Path $repoRoot 'deploy/units.json'
+    if (Test-Path $unitsPath) {
+        $unitsObj = [IO.File]::ReadAllText($unitsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        foreach ($u in $unitsObj.plugins) {
+            if (-not $u.requiresPlugins) { continue }
+            $pkgId = if ($u.id -eq 'danmu') { 'danmu-api' } else { $u.id }
+            $unitsDeps[$pkgId] = @($u.requiresPlugins)
+        }
+    }
+
     $pluginIds = @('apiserver', 'danmu-api', 'drpy', 'ffmpeg', 'node', 'pyrt')
+    # 展示名（用户可见）：更新中心「本机插件」行、插件更新列表读的就是 display_name。
+    # New-Entry 默认生成「<id> 安装包」，而旧值一直被沿用 —— 界面里常年显示
+    # "apiserver 安装包 / drpy 安装包"。统一成「引擎叫 X 运行时，业务包叫 X 组件」。
+    $pluginDisplay = @{
+        'apiserver' = '影视后端'
+        'danmu-api' = '弹幕组件'
+        'drpy'      = 'drpy 运行时'
+        'ffmpeg'    = 'FFmpeg 转码器'
+        'node'      = 'Node 运行时'
+        'pyrt'      = 'Python 运行时'
+    }
     foreach ($pid2 in $pluginIds) {
         $a = Find-Asset "$pid2-*.zip"
         if (-not $a) {
@@ -509,19 +545,28 @@ if ($scope -contains 'plugins') {
         #   之前"沿用旧值"让它们从 1.1.x 起全是 hidden=true，
         #   全新 PC 的「本机插件」列表因此是空的（找不到影视后端）。
         $entry.hidden = $false
-        # 首次发布没有旧条目可沿用，display_name 会空着 —— 插件列表里只剩一个 id。
-        # pyrt 尤其要写清楚：它**不自带** python，靠系统的（manifest 的 execFallback
-        # 依次试 ../python/python.exe → python3 → python.exe），装了没 python 会静默起不来。
+        # 展示名统一（用户可见）：覆盖 New-Entry 的「<id> 安装包」
+        if ($pluginDisplay.ContainsKey($pid2)) { $entry.display_name = $pluginDisplay[$pid2] }
+        # pyrt 的说明要写清楚：它**不自带** python（Windows 版内置；其它平台靠系统
+        # 的 execFallback 依次试 python3 / python.exe），装了没 python 会静默起不来。
         if ($pid2 -eq 'pyrt') {
-            $entry.display_name = 'Python 运行时'
             $entry.desc = '让 .py 源在本机执行（需系统已装 Python 3.10+）；.js 源由它转发给 drpy'
         }
-        # 其余字段沿用原值（requires / display_name / desc 是人工维护的）
+        # 依赖：声明式（units.json），优先级高于沿用旧值
+        if ($unitsDeps.ContainsKey($pid2)) { $entry.requires = @($unitsDeps[$pid2]) }
+        # 其余字段沿用原值（display_name / desc 是人工维护的）
         if ($existing -and $existing.packages.$pid2) {
             $old = $existing.packages.$pid2
-            if ($old.requires) { $entry.requires = $old.requires }
-            if ($old.display_name) { $entry.display_name = $old.display_name }
-            if ($old.desc) { $entry.desc = $old.desc }
+            if (-not $unitsDeps.ContainsKey($pid2) -and $old.requires) { $entry.requires = $old.requires }
+            # 显示名单里有的，一律用新名字（旧值是「<id> 安装包」，沿用就是让它永远难看）
+            if ($old.display_name -and -not $pluginDisplay.ContainsKey($pid2)) {
+                $entry.display_name = $old.display_name
+            }
+            # ★ desc 只沿用**人工写的**说明（pyrt 那句）。脚本自动生成的
+            #   「猫窝插件 <id> <ver>」不能沿用 —— 它会永远停在第一次生成时的版本号，
+            #   实测清单里 drpy 实际 0.1.5、desc 还写着「猫窝插件 drpy 0.1.0」，
+            #   用户看到的版本号对不上。
+            if (-not (Test-AutoDesc $old.desc)) { $entry.desc = $old.desc }
         }
         $packages[$pid2] = $entry
         Write-Host "  $pid2  <- $($a.name)" -ForegroundColor Green
@@ -571,6 +616,7 @@ if (($scope -contains 'meow-tv') -or ($scope -contains 'tv-module')) {
         } else { '0.0.0' }
 
         $entry = New-Entry $a $v @("android-$abi") $id -Notes "TV 运行时模块 $abi $v"
+        $entry.display_name = 'Node 运行时（模块）'
         # ★ 版本门槛（2026-11）：模块是壳用 DexClassLoader 加载、并实现壳里那份
         #   plugin-api 接口的 —— 老壳装新模块会 AbstractMethodError。
         #   min_app_version 取"第一个支持运行时模块的壳版本"，固定不改：
@@ -581,8 +627,8 @@ if (($scope -contains 'meow-tv') -or ($scope -contains 'tv-module')) {
         if ($existing -and $existing.packages.$id) {
             $old = $existing.packages.$id
             if ($null -ne $old.hidden) { $entry.hidden = $old.hidden }
-            if ($old.display_name) { $entry.display_name = $old.display_name }
-            if ($old.desc) { $entry.desc = $old.desc }
+            # display_name 由上面的固定映射决定，不沿用旧值（旧值是「<id> 安装包」）
+            if (-not (Test-AutoDesc $old.desc)) { $entry.desc = $old.desc }
         }
         $packages[$id] = $entry
         Write-Host "  $id  <- $($a.name)" -ForegroundColor Green
@@ -625,8 +671,8 @@ if (($scope -contains 'meow-tv') -or ($scope -contains 'tv-module')) {
         if ($existing -and $existing.packages.$id) {
             $old = $existing.packages.$id
             if ($null -ne $old.hidden) { $entry.hidden = $old.hidden }
-            if ($old.display_name) { $entry.display_name = $old.display_name }
-            if ($old.desc) { $entry.desc = $old.desc }
+            # display_name 由上面的固定映射决定，不沿用旧值（旧值是「<id> 安装包」）
+            if (-not (Test-AutoDesc $old.desc)) { $entry.desc = $old.desc }
         }
         $packages[$id] = $entry
         Write-Host "  $id  <- $($a.name)" -ForegroundColor Green

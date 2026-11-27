@@ -52,10 +52,12 @@ services:
       MEOW_DATA: /data
       MEOW_PORT: "9979"
       # 用 `-` 而非 `:-`：显式写空串（MEOW_DANMAKU_API=）表示"不用聚合服务"，
-      # ★ 默认指向 pyrt：它能同时处理 .py（本地执行）与 .js（转发给 drpy）。
-      #   只指 drpy 时 .py 源一律报"jsRuntime 未配置"。要退回纯 drpy 就在
-      #   .env 里显式写 MEOW_JS_RUNTIME=http://drpy:9330。
-      MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://pyrt:19331}
+      # ★ 2026-11-28 中期分层：两个引擎分开配，互不代理 ——
+      #   .js 源 → MEOW_JS_RUNTIME（drpy）
+      #   .py 源 → MEOW_PY_RUNTIME（pyrt）；留空则回落到 jsRuntime（兼容老部署）
+      #   这样 pyrt 挂了/被停，.js 完全不受影响。
+      MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://drpy:9330}
+      MEOW_PY_RUNTIME: ${MEOW_PY_RUNTIME-http://pyrt:19331}
       # `:-` 会把空串当未设置，置空就失效了。
       MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
       # 写操作令牌：保护收藏/进度/片库删除/缓存清理/配置导入等写端点。

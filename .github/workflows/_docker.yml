@@ -45,6 +45,20 @@ on:
         required: false
         type: boolean
         default: true
+      # ★ 手动强制重打运行时镜像（2026-11-28 补）：
+      #   自动判据只看「自上个 release tag 起的改动」，补不上**历史欠账** ——
+      #   实测 meow-pyrt 停在 0.1.0（2026-11-26 推），而 1.2.27 的 pyrt 修复
+      #   已在 1.2.28 的 tag 里，差集里看不到它。补一次历史欠账时勾这两个。
+      rebuild_pyrt:
+        description: '强制重打 pyrt 镜像（补历史欠账用）'
+        required: false
+        type: boolean
+        default: false
+      rebuild_drpy:
+        description: '强制重打 drpy 镜像'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   docker:
@@ -57,11 +71,46 @@ jobs:
     #   漏了会报 "Password required"（实测踩过）。
     environment: dockerhub
     steps:
+      # fetch-depth: 0 —— 下面「运行时镜像是否需要重打」要 git diff 上一个 release tag
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: docker/setup-qemu-action@v3
 
       - uses: docker/setup-buildx-action@v3
+
+      # ★ 运行时镜像重建判据（2026-11-28 补）：
+      #   build-push-docker.ps1 对 drpy/pyrt 是「tag 已存在就跳过」，而它们的 tag 是
+      #   独立版本线（drpy 0.9.x / pyrt 0.1.x）。只要版本号没 bump，「跳过」就永远
+      #   命中 —— 实测：meow-pyrt 至今只有 0.1.0（2026-11-26 推），而 server/pyrt/pyrt.py
+      #   在 11-27 改过（探测不再持锁），Docker 用户拿不到这个修复。
+      #   这里按「自上一个 release tag 以来这些路径有没有改动」决定强制重建，
+      #   版本号不用为了发镜像而硬 bump。
+      - name: 判断运行时镜像是否需要重打
+        id: rt
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet origin 2>/dev/null || true
+          CUR_TAG=$(git tag --points-at HEAD --list 'release-v*' | head -1)
+          if [ -n "$CUR_TAG" ]; then
+            PREV=$(git tag --sort=-v:refname --list 'release-v*' | grep -vx "$CUR_TAG" | head -1 || true)
+            TARGET="$CUR_TAG"
+          else
+            PREV=$(git tag --sort=-v:refname --list 'release-v*' | head -1 || true)
+            TARGET=HEAD
+          fi
+          # 没有基线（首个 tag）→ 两个都重建，宁可多打。
+          changed() {
+            [ -z "$PREV" ] && return 0
+            ! git diff --quiet "$PREV" "$TARGET" -- "$@"
+          }
+          if changed server/pyrt deploy/docker/Dockerfile.pyrt; then PYRT=1; else PYRT=0; fi
+          if changed server/drpy deploy/docker/Dockerfile.drpy; then DRPY=1; else DRPY=0; fi
+          echo "pyrt=$PYRT" >> "$GITHUB_OUTPUT"
+          echo "drpy=$DRPY" >> "$GITHUB_OUTPUT"
+          echo "运行时镜像重建：pyrt=$PYRT drpy=$DRPY（基线 ${PREV:-无} → ${TARGET}）"
 
       - name: 登录 Docker Hub
         # 手动 dry-run 不需要登录（也不写 registry 缓存）；workflow_call 没有该输入 → 视为 false
@@ -164,6 +213,12 @@ jobs:
             Cache       = 'registry'
           }
           if ('${{ inputs.latest }}' -eq 'false') { $p.NoLatest = $true }
+          # 运行时载荷有改动 → 强制重建（否则「tag 已存在」会一直跳过，见上一步注释）
+          if ('${{ steps.rt.outputs.pyrt }}' -eq '1') { $p.RebuildPyrt = $true }
+          if ('${{ steps.rt.outputs.drpy }}' -eq '1') { $p.RebuildDrpy = $true }
+          # 手动强制（补历史欠账；只对 dispatch 有意义，release 调用恒为空）
+          if ('${{ inputs.rebuild_pyrt }}' -eq 'true') { $p.RebuildPyrt = $true }
+          if ('${{ inputs.rebuild_drpy }}' -eq 'true') { $p.RebuildDrpy = $true }
           # 手动入口默认 dry-run：只构建不推送，先确认能过再取消勾选。
           # ★ 同时把 Cache 置空：--cache-to type=registry 本身也是一次推送，
           #   dry-run 不该往 Docker Hub 写 :buildcache。
