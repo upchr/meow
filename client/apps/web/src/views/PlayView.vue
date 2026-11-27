@@ -35,7 +35,7 @@ import {
   waitLibraryTranscode,
   waitTranscode,
 } from '@/api/library'
-import { skipWindowFrom, startAtFrom, subTracksFrom } from '@/api/playExtras'
+import { skipWindowFrom, startAtFrom, subTracksFrom, subtitleFormat } from '@/api/playExtras'
 import { isHi10p, resolvePlaybackRoute, webCanDecodeVideo, webviewAudioCodecs } from '@/utils/playRoute'
 import { detectCodecCaps } from '@/utils/codecCaps'
 import { transcodeBadge, transcodeMediaInfo, type MediaSourceInfo } from '@/utils/mediaInfo'
@@ -719,6 +719,21 @@ const needsParser = computed(() => {
 const spiderSkip = computed(() => skipWindowFrom(play.value?.skips))
 const spiderStartAt = computed(() => startAtFrom(play.value?.position))
 const playSubs = computed(() => subTracksFrom(play.value?.subs))
+/**
+ * 端内原生播放器能直接吃的字幕地址（2026-11-27）。
+ *
+ * <p>VLC 自带 srt/ass/vtt 解码，不需要网页那套「转 VTT + blob」；但地址必须是
+ * **绝对 URL** 且经后端代理（源站常要求 Referer）。取第一份格式可用的即可 ——
+ * 网页的字幕也是"有就用第一份"。
+ */
+function nativeSubUrl(): string {
+  for (const s of playSubs.value) {
+    if (!s.url) continue
+    if (subtitleFormat(s) === 'other') continue
+    return absoluteApi(proxyStream(s.url))
+  }
+  return ''
+}
 
 /**
  * 多画质清单（后端 `normalizePlay` 折出来的）。
@@ -1434,6 +1449,8 @@ function buildNativeMeta(): string {
       flag: flag.value,
       epUrl: rawId.value,
       apiBase: apiBase(),
+      // 外挂字幕（原生 VLC 直接加载；空串 = 本集没有）
+      sub: nativeSubUrl(),
       dm: {
         opacity: prefs.danmakuOpacity,
         scale: prefs.danmakuScale,
@@ -1529,8 +1546,8 @@ watch(
   (u) => {
     if (!iosNativeLayer.value || !u) return
     if (u.includes('/api/transcode')) return
-    // 带上这一集的 header（换线路时防盗链头可能和上一条不同）
-    iosNativeOpen(absoluteApi(u), play.value?.header)
+    // 带上这一集的 header（换线路时防盗链头可能和上一条不同）与字幕
+    iosNativeOpen(absoluteApi(u), play.value?.header, nativeSubUrl())
   },
 )
 

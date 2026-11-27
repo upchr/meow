@@ -25,6 +25,9 @@ const PROJECT = read(IOS, 'project.yml')
 const PREPARE = read(IOS, 'scripts', 'prepare-vlckit.sh')
 const PLAYER = read(IOS, 'Meow', 'NativeVlcPlayer.swift')
 const POWER = read(IOS, 'Meow', 'PowerTimer.swift')
+const BOOT = read(IOS, 'Meow', 'Bootstrap.swift')
+const PLIST = read(IOS, 'Meow', 'Info.plist')
+const SETTINGS = read(ROOT, 'client', 'apps', 'web', 'src', 'views', 'SettingsView.vue')
 const DANMAKU = read(IOS, 'Meow', 'VlcDanmakuOverlay.swift')
 const WEBVIEW = read(IOS, 'Meow', 'WebView.swift')
 const BOOTSTRAP = read(IOS, 'Meow', 'Bootstrap.swift')
@@ -215,7 +218,8 @@ describe('透明 WebView 控制层', () => {
     expect(BRIDGE).toContain('export function iosNativeCmd(')
     // 换片要走带 header 的封装（换线路时防盗链头可能不同）
     expect(BRIDGE).toContain('export function iosNativeOpen(')
-    expect(BRIDGE).toContain("iosNativeCmd('open', { url, headers: encodeHeaders(header) })")
+    expect(BRIDGE).toContain("iosNativeCmd('open', {")
+    expect(BRIDGE).toContain('headers: encodeHeaders(header),')
   })
 
   it('web 侧：控制层组件复用弹幕引擎与解析器（不另写一套）', () => {
@@ -259,7 +263,7 @@ describe('透明 WebView 控制层', () => {
     expect(body).toContain('if (iosNativeLayer.value) {')
     expect(body).toContain('play.value = { url: libraryDirect.value } as PlayResult')
     // 换片仍然由监听 play.url 的那一处统一发 open（带这一集的 header）
-    expect(PLAY).toContain('iosNativeOpen(absoluteApi(u), play.value?.header)')
+    expect(PLAY).toContain('iosNativeOpen(absoluteApi(u), play.value?.header, nativeSubUrl())')
     expect(PLAY).toContain('if (!iosNativeLayer.value || !u) return')
     // 原生侧两种 value 形态都收：纯 URL（老协议）与 {url, headers}
     expect(PLAYER).toContain('if let d = value as? [String: Any] {')
@@ -462,6 +466,49 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(LAYER).toContain('if (iosNative) return currentTime.value')
     expect(LAYER).toContain('if (iosNative) return !playing.value')
     expect(LAYER).toContain('if (iosNative) return duration.value || props.totalDuration || 0')
+  })
+
+  it('后端地址可配（对齐 TV）：壳落盘 + 设置页可编辑 + 扫描 + 恢复端内', () => {
+    expect(BOOT).toContain('BackendOverride.current()')
+    expect(BOOT).toContain("postMessage({op:'apiBackend'")
+    expect(BOOT).toContain("window.meowIos.apiBackend='")
+    expect(WEBVIEW).toContain('case "apiBackend":')
+    expect(SETTINGS).toContain('iosBackendConfigurable')
+    expect(SETTINGS).toContain('function restoreEmbeddedBackend()')
+    expect(SETTINGS).toContain('v-if="!ios || iosBackendConfigurable"')
+    // 原生 URLSession 要能访问外部 http 后端
+    expect(PLIST).toContain('NSAllowsArbitraryLoads')
+  })
+
+  it('字幕：随 meta/open 交给 VLC（:sub-file），不依赖运行期 slave API', () => {
+    expect(PLAYER).toContain(':sub-file=')
+    expect(PLAYER).toContain('private var pendingSubUrl')
+    expect(PLAY).toContain('function nativeSubUrl()')
+    expect(PLAY).toContain('iosNativeOpen(absoluteApi(u), play.value?.header, nativeSubUrl())')
+    expect(BRIDGE).toContain('sub: sub || ')
+  })
+
+  it('自然播完交给网页 onEnded（连播倒计时/立即下一集/关闭连播三种设置一致）', () => {
+    expect(PLAYER).toContain('private func notifyEnded()')
+    expect(PLAYER).toContain('__meowVlcEnded')
+    expect(PLAYER).toContain('notifyEnded()')
+    expect(LAYER).toContain('__meowVlcEnded')
+    expect(LAYER).toContain('onMediaEnded()')
+    // 换集要复位 endedSent（否则第二集播完被吞，连播只生效一次）
+    expect(LAYER).toContain('endedSent = false')
+    // 不再"播完就 finish（弹已退出面板）"
+    expect(PLAYER).toContain('notifyEnded()')
+  })
+
+  it('片头/片尾/中插跳过：seekBy 在原生模式改走指令', () => {
+    expect(LAYER).toMatch(/function seekBy\(sec: number\)[\s\S]{0,400}iosNativeCmd\('seek'/)
+  })
+
+  it('弹幕：渐变（g=）与字重 600 对齐网页', () => {
+    expect(DANMAKU).toContain('var gradient: [UIColor]? = nil')
+    expect(DANMAKU).toContain('static func parseGradient(')
+    expect(DANMAKU).toContain('Self.gradientText(')
+    expect(DANMAKU).toContain('weight: .semibold')
   })
 
   it('睡眠定时在原生播放时也能停（控制层补 powerTimer 桥 + 直接暂停）', () => {

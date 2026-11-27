@@ -110,6 +110,13 @@ struct WebView: UIViewRepresentable {
                     case "powerTimer":
                         // 倒计时（原生计时：JS 切后台会被挂起）
                         PowerTimer.start(seconds: (dict["value"] as? NSNumber)?.intValue ?? 0)
+                    case "apiBackend":
+                        /*
+                         * 后端地址（2026-11-27）：落 UserDefaults，下次
+                         * makeBootScript 注入新 apiBase。页面保存后会自己
+                         * location.reload()，这里不回执。
+                         */
+                        BackendOverride.set(dict["value"] as? String ?? "")
                     case "notify":
                         Notifier.shared.notify(
                             title: dict["title"] as? String ?? "喵播放器",

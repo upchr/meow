@@ -57,6 +57,13 @@
     <dict>
         <key>NSAllowsArbitraryLoadsInWebContent</key>
         <true/>
+        <!--
+          后端地址可配（2026-11-27）：用户可以指向局域网/外部的 http 后端（Docker/NAS），
+          原生 URLSession（进度回传等）不在 WebContent 豁免范围里，必须整体放开 http。
+          本 App 只侧载分发，不走上架审核。
+        -->
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>

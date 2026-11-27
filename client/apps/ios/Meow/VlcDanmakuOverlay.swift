@@ -24,6 +24,8 @@ final class VlcDanmakuOverlay: UIView {
         let text: String
         let mode: Int
         let color: UIColor
+        /// 渐变弹幕（`<d g="FF0000,00FF00">`）。非空时按逐字插值上色
+        var gradient: [UIColor]? = nil
     }
 
     private static let STATIC_MS: Int = 4_000
@@ -171,7 +173,8 @@ final class VlcDanmakuOverlay: UIView {
         textSize = min(40, max(12, 22 * scale * narrow * short))
         laneH = textSize.rounded(.up) + 10
         lanes = max(3, Int(h * areaRatio / laneH))
-        font = .boldSystemFont(ofSize: textSize)
+        // 字重与网页 `600 ${fontSize}px` 对齐（bold=700 在真机上偏粗）
+        font = .systemFont(ofSize: textSize, weight: .semibold)
         // 尺寸变了，按新行数重排（清掉重来，比错位好）
         clearActive()
     }
@@ -333,6 +336,16 @@ final class VlcDanmakuOverlay: UIView {
         label.text = item.text
         label.font = font
         label.textColor = item.color.withAlphaComponent(opacity)
+        /*
+         * 渐变弹幕（2026-11-27 对齐网页的 `g=` 属性）：逐字插值上色。
+         * 网页是 canvas 渐变填充；iOS 侧用"每个字一个颜色"近似 —— 中文弹幕
+         * 每个字 20~40pt 宽，肉眼就是连续渐变，且能继续复用 UILabel + 位图缓存
+         * （CAGradientLayer 遮罩方案拿不到 layer shadow，描边会丢）。
+         */
+        if let g = item.gradient, g.count >= 2 {
+            label.attributedText = Self.gradientText(item.text, colors: g,
+                                                    font: font, opacity: opacity)
+        }
         label.layer.shadowColor = UIColor.black.withAlphaComponent(opacity * 0.85).cgColor
         // 与网页 sprite 的 shadowBlur=3 对齐（位图缓存，不会每帧重算）
         label.layer.shadowRadius = 2
@@ -537,10 +550,23 @@ final class VlcDanmakuOverlay: UIView {
             // 同文本 1.5s 内重复 = 刷屏，只留第一条
             if let prev = lastAt[decoded], abs(timeMs - prev) < 1_500 { continue }
             lastAt[decoded] = timeMs
+            /*
+             * 渐变弹幕 `<d p="…" g="FF0000,00FF00">`：g 不在 p 里，从整段标签里抠。
+             * 单色（无 g）时保持 undefined（走纯色路径，零额外开销）。
+             */
+            var gradient: [UIColor]? = nil
+            let whole = ns.substring(with: m.range)
+            if let gr = whole.range(of: "g=\"") {
+                let tail = whole[gr.upperBound...]
+                if let end = tail.firstIndex(of: "\"") {
+                    gradient = Self.parseGradient(String(tail[..<end]))
+                }
+            }
             out.append(Item(timeMs: timeMs,
                             text: decoded,
                             mode: mode,
-                            color: Self.color(fromDecimal: color)))
+                            color: Self.color(fromDecimal: color),
+                            gradient: gradient))
         }
         return out
     }
@@ -551,6 +577,56 @@ final class VlcDanmakuOverlay: UIView {
                        green: CGFloat((v >> 8) & 0xFF) / 255,
                        blue: CGFloat(v & 0xFF) / 255,
                        alpha: 1)
+    }
+
+    /// `g="FF0000,00FF00"` → 颜色数组；最多取 5 段（再多肉眼也看不出）
+    static func parseGradient(_ raw: String) -> [UIColor]? {
+        let parts = raw.split(separator: ",").prefix(5).map { $0.trimmingCharacters(in: .whitespaces) }
+        let colors = parts.compactMap { hex -> UIColor? in
+            let s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+            guard s.count == 6, let v = Int(s, radix: 16) else { return nil }
+            return color(fromDecimal: v)
+        }
+        return colors.count >= 2 ? colors : nil
+    }
+
+    /// 逐字插值的富文本（渐变弹幕）
+    private static func gradientText(_ text: String, colors: [UIColor],
+                                     font: UIFont, opacity: CGFloat) -> NSAttributedString {
+        let chars = Array(text)
+        guard !chars.isEmpty else { return NSAttributedString(string: text) }
+        let out = NSMutableAttributedString()
+        let last = max(1, chars.count - 1)
+        for (i, ch) in chars.enumerated() {
+            let t = CGFloat(i) / CGFloat(last)
+            let c = blend(colors, t).withAlphaComponent(opacity)
+            out.append(NSAttributedString(string: String(ch), attributes: [
+                .font: font,
+                .foregroundColor: c,
+            ]))
+        }
+        return out
+    }
+
+    /// 多段颜色在 [0,1] 上的线性插值
+    private static func blend(_ colors: [UIColor], _ t: CGFloat) -> UIColor {
+        guard colors.count >= 2 else { return colors.first ?? .white }
+        let clamped = min(1, max(0, t))
+        let scaled = clamped * CGFloat(colors.count - 1)
+        let idx = min(colors.count - 2, Int(scaled))
+        let frac = scaled - CGFloat(idx)
+        return mix(colors[idx], colors[idx + 1], frac)
+    }
+
+    private static func mix(_ a: UIColor, _ b: UIColor, _ t: CGFloat) -> UIColor {
+        var ar: CGFloat = 0, ag: CGFloat = 0, ab: CGFloat = 0, aa: CGFloat = 0
+        var br: CGFloat = 0, bg: CGFloat = 0, bb: CGFloat = 0, ba: CGFloat = 0
+        a.getRed(&ar, green: &ag, blue: &ab, alpha: &aa)
+        b.getRed(&br, green: &bg, blue: &bb, alpha: &ba)
+        return UIColor(red: ar + (br - ar) * t,
+                       green: ag + (bg - ag) * t,
+                       blue: ab + (bb - ab) * t,
+                       alpha: aa + (ba - aa) * t)
     }
 
     /**

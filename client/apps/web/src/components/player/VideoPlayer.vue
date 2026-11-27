@@ -944,6 +944,15 @@ function retryNow() {
 
 /** 跳转秒数（相对当前） */
 function seekBy(sec: number) {
+  /*
+   * 端内原生渲染：`<video>.currentTime` 打不动 VLC —— 片头/片尾跳过、
+   * 中插跳过、快捷键都走这里，不给原生分支等于整组功能失效（2026-11-27 审计）。
+   */
+  if (iosNative) {
+    const t = currentTime.value + sec
+    iosNativeCmd('seek', Math.max(0, Number.isFinite(t) ? t : 0))
+    return
+  }
   const v = video.value
   if (!v) return
   const d = v.duration || 0
@@ -6743,6 +6752,17 @@ onMounted(() => {
    * 必须保持不变，改顺序会踩到那几处对时序敏感的回归。
    */
   if (iosNative) {
+    /*
+     * 换集要复位"已发过 ended"（2026-11-27）：web 路径在 setupSource 里复位，
+     * 而原生模式 setupSource 直接 return —— 不复位的话第二集播完 onMediaEnded
+     * 会被 endedSent 吞掉，连播只生效一次。
+     */
+    watch(
+      () => props.currentIndex,
+      () => {
+        endedSent = false
+      },
+    )
     iosNativePoll = window.setInterval(() => {
       const st = readIosNativeState()
       if (!st) return
@@ -6767,6 +6787,13 @@ onMounted(() => {
      */
     ;(window as unknown as { __meowVlcShowBar?: () => void }).__meowVlcShowBar = () => {
       wake()
+    }
+    /*
+     * 原生自然播完（2026-11-27）：走与 `<video>` ended 同一条入口，
+     * 连播倒计时 / 立即下一集 / 关闭连播三种设置才和网页一致。
+     */
+    ;(window as unknown as { __meowVlcEnded?: () => void }).__meowVlcEnded = () => {
+      onMediaEnded()
     }
     /*
      * 把「视频所在容器链」的背景清成透明（2026-11-27 真机实报「只有声音、
@@ -7348,8 +7375,13 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener('meow:webview-resume', onWebviewResume)
   if (iosNative) {
-    // 卸载时摘掉原生点屏回调：否则原生再调它就会碰到已销毁的组件状态
-    delete (window as unknown as { __meowVlcShowBar?: () => void }).__meowVlcShowBar
+    // 卸载时摘掉原生回调：否则原生再调它就会碰到已销毁的组件状态
+    const w = window as unknown as {
+      __meowVlcShowBar?: () => void
+      __meowVlcEnded?: () => void
+    }
+    delete w.__meowVlcShowBar
+    delete w.__meowVlcEnded
   }
   const w = window as unknown as { __meowPauseMedia?: () => void }
   if (w.__meowPauseMedia === pauseMediaOnHide) w.__meowPauseMedia = undefined
@@ -8808,12 +8840,13 @@ defineExpose({
         </button>
 
         <!--
-          原生播放（TV 壳）：紧跟线路按钮右侧，主动把当前集交给 ExoPlayer。
-          触发父组件的 tryNative（带 header / 续播进度）；Web / PC 无桥不显示。
+          原生播放：紧跟线路按钮右侧，主动把当前集交给原生播放器（TV=ExoPlayer，
+          iOS=端内 VLCKit）。2026-11-27：按钮在窄屏（iPhone 竖屏）也要显示 ——
+          原来 `hidden sm:flex` 在手机上等于没有这个入口。
         -->
         <button
           v-if="nativeAvailable"
-          class="hidden shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 sm:flex"
+          class="flex shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20"
           title="用原生播放器播放"
           @click.stop="emit('nativePlay')"
         >

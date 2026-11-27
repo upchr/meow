@@ -126,6 +126,19 @@ final class Bootstrap: ObservableObject {
         }
         #endif
 
+        /*
+         * 用户指定的后端地址（2026-11-27，对齐 TV 的「后端地址可配」）。
+         *
+         * 端内 JVM 仍然照常启动（页面/静态服务/弹幕载荷都依赖它这条链路），
+         * 但**桥注入的 apiBase 以用户配置为准** —— resolveBase() 在 iOS 只认
+         * 桥，所以这里换值就等于整页换后端。空串 = 用端内后端。
+         */
+        let override = BackendOverride.current()
+        if !override.isEmpty {
+            base = override
+            LaunchLog.write("backend override: \(override)")
+        }
+
         let site = Self.argValue("--site") ?? ""
         bootScript = Self.makeBootScript(base: base, site: site)
         webURL = URL(string: "http://127.0.0.1:9979/")
@@ -218,6 +231,15 @@ final class Bootstrap: ObservableObject {
                   + "build:'\(Self.buildId())',"
                   + "apiBase:'\(Self.jsString(base))',"
                   + "runtime:'OpenJDK 9 Zero（静态链接 · -Xint）'}")
+        /*
+         * 后端地址可配（2026-11-27）：`apiBackend` 是当前生效值（含用户覆盖），
+         * `setApiBackend(url)` 写入 UserDefaults，"" = 恢复端内后端。
+         * 落盘后必须整页 reload 才生效（aria 的桥是文档级注入）。
+         */
+        js.append("window.meowIos.apiBackend='\(Self.jsString(base))'")
+        js.append("window.meowIos.setApiBackend=function(u){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'apiBackend',value:String(u||'')});"
+                  + "return true}catch(e){return false}}")
         /*
          * 原生兜底播放桥（2026-11-27）：web 的 <video> 播不了 MKV/AVI/FLV/DTS
          * 时交给端内 VLCKit。`nativeVlc` 是**同步的 feature detect** ——
@@ -369,5 +391,34 @@ final class Bootstrap: ObservableObject {
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return false
+    }
+}
+
+/**
+ * 用户手填的后端地址（iOS 的「后端地址」设置）。
+ *
+ * <p>为什么放在 UserDefaults 而不是 localStorage：BootScript 是
+ * `.atDocumentStart` 注入的，页面 JS 还没跑 —— 启动时必须由壳先读出这份值，
+ * 才能决定 `meowIos.apiBase` 指向端内 JVM 还是外部后端。
+ *
+ * <p>空串 = 用端内后端（默认）。写 "" 即清除覆盖。改完由设置页 location.reload()
+ * 让桥重新注入（新值在下次 makeBootScript 生效）。
+ */
+enum BackendOverride {
+    private static let key = "meow.api.base"
+
+    static func current() -> String {
+        let v = UserDefaults.standard.string(forKey: key) ?? ""
+        return v.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func set(_ raw: String) {
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 只收 http(s)：file:// / about: 之类写进去会让整页白屏
+        let ok = v.isEmpty || v.lowercased().hasPrefix("http://") || v.lowercased().hasPrefix("https://")
+        guard ok else { return }
+        if v.isEmpty { UserDefaults.standard.removeObject(forKey: key) }
+        else { UserDefaults.standard.set(v, forKey: key) }
+        LaunchLog.write("backend override -> \(v.isEmpty ? "(embedded)" : v)")
     }
 }

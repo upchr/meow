@@ -340,6 +340,8 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
                 if let raw = d["headers"] as? String {
                     headers = Self.parseHeaders(raw)
                 }
+                // 这一集的字幕（换集后字幕也跟着换；空串 = 本集没有）
+                pendingSubUrl = (d["sub"] as? String) ?? ""
             }
             guard let u = URL(string: target) else { return }
             /*
@@ -470,16 +472,39 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
          */
         danmakuXml = nil
         danmaku.setItems([])
+        endedNotified = false
+        let media = makeMedia(u, sub: pendingSubUrl)
+        player.media = media
+        player.play()
+        AudioSession.setPlaying(true)
+    }
+
+    /**
+     * 建 VLCMedia：UA/Referer 透传 + 可选外挂字幕。
+     *
+     * <p>字幕走 `:sub-file=` 选项而不是运行期挂 slave：VLCKit 的外挂字幕 API
+     * 在各小版本里签名不一（`addPlaybackSlave:type:enforce:` 曾改过枚举名），
+     * 用 media option 跟随 media 生命周期，换集自动重置，不会残留上一集的字幕。
+     * 地址是 `proxyStream()` 出来的绝对 URL（后端代理取原始 srt/ass/vtt）。
+     */
+    private func makeMedia(_ u: URL, sub: String) -> VLCMedia {
         let media = VLCMedia(url: u)
+        /*
+         * 源站防盗链：VLC 自己拉流，UA/Referer 必须跟着走，否则 403
+         * （与后端转码那条链路的 srcHeader 是同一件事）。
+         */
         if let ua = headers["User-Agent"], !ua.isEmpty {
             media.addOption(":http-user-agent=\(ua)")
         }
         if let ref = headers["Referer"], !ref.isEmpty {
             media.addOption(":http-referrer=\(ref)")
         }
-        player.media = media
-        player.play()
-        AudioSession.setPlaying(true)
+        if !sub.isEmpty {
+            media.addOption(":sub-file=\(sub)")
+            // 关掉同目录自动探测：源站目录下常有同名 .srt/.ass，重复加载会叠字幕
+            media.addOption(":sub-autodetect-file=0")
+        }
+        return media
     }
 
     @objc private func appBecameActive() {
@@ -658,17 +683,7 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
     // MARK: - 媒体准备
 
     private func prepareMedia() {
-        let media = VLCMedia(url: mediaUrl)
-        /*
-         * 源站防盗链：VLC 自己拉流，UA/Referer 必须跟着走，否则 403
-         * （与后端转码那条链路的 srcHeader 是同一件事）。
-         */
-        if let ua = headers["User-Agent"], !ua.isEmpty {
-            media.addOption(":http-user-agent=\(ua)")
-        }
-        if let ref = headers["Referer"], !ref.isEmpty {
-            media.addOption(":http-referrer=\(ref)")
-        }
+        let media = makeMedia(mediaUrl, sub: (meta["sub"] as? String) ?? "")
         player.media = media
         player.play()
         /*
@@ -705,6 +720,10 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
     private var currentMediaUrl = ""
     /// 控制栏是否可见（web 控制层通过 `bar` 指令上报）。只影响状态推送频率
     private var controlBarVisible = true
+    /// 这一集的字幕地址（proxyStream 绝对 URL）；随 media 一起建，换集由 open 更新
+    private var pendingSubUrl = ""
+    /// 自然播完只通知一次（通知后停在同一帧，等网页决定连播/停）
+    private var endedNotified = false
 
     private func applyPendingSeekIfNeeded() {
         guard pendingSeekMs > 0 else { return }
@@ -922,7 +941,13 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
 
         switch player.state {
         case .ended:
-            finish(ended: true)
+            /*
+             * 自然播完不关页（2026-11-27 对齐网页）：通知控制层把「播完」交给
+             * VideoPlayer 的 onMediaEnded → 父页面 onEnded，连播倒计时、
+             * 立即下一集、关闭连播三种设置才都跟网页一致。
+             * 旧行为是直接 finish 并弹"已退出"，把连播/倒计时整个跳过了。
+             */
+            notifyEnded()
         case .error:
             // 不直接关：先把原因亮出来，用户点一下屏幕才回网页（不然又是一次"闪退感"）
             showFatal("播放出错（VLC 报告 error）")
@@ -1064,6 +1089,17 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         }
         hideControlsWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+    }
+
+    /// 自然播完：落一次进度 + 通知控制层（只通知一次）。
+    private func notifyEnded() {
+        guard !didFinish, !endedNotified else { return }
+        endedNotified = true
+        LaunchLog.write("[vlc] ended")
+        // 进度按片尾落盘；父页面 onEnded 会按"看完"清掉续播点
+        reportProgress(force: true)
+        controlWebView?.evaluateJavaScript(
+            "window.__meowVlcEnded&&window.__meowVlcEnded()", completionHandler: nil)
     }
 
     @objc private func closePlayer() {

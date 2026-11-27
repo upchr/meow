@@ -564,12 +564,17 @@ export function iosNativeCmd(
 /**
  * 让原生换片（选集 / 换线路）。
  *
- * <p>与裸 `iosNativeCmd('open', url)` 的区别：把**这一集**的 header 一起带过去。
- * 换线路时防盗链头可能和上一条不同，只换 URL 会 403（真机上表现为"换线路后
- * 一直黑屏"）。原生侧对同一 URL 会忽略（不把进度打回 0）。
+ * <p>与裸 `iosNativeCmd('open', url)` 的区别：把**这一集**的 header 与字幕
+ * 一起带过去。换线路时防盗链头可能和上一条不同，只换 URL 会 403（真机上表现为
+ * "换线路后一直黑屏"）；字幕随 media 重建，换集不会残留上一集的外挂字幕。
+ * 原生侧对同一 URL 会忽略（不把进度打回 0）。
  */
-export function iosNativeOpen(url: string, header?: unknown): boolean {
-  return iosNativeCmd('open', { url, headers: encodeHeaders(header) })
+export function iosNativeOpen(url: string, header?: unknown, sub?: string): boolean {
+  return iosNativeCmd('open', {
+    url,
+    headers: encodeHeaders(header),
+    sub: sub || '',
+  })
 }
 
 // ---------------------------------------------------------------- 系统睡眠

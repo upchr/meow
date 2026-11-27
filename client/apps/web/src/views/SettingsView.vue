@@ -350,6 +350,33 @@ async function saveAndReconnect() {
   apiMsg.value = ''
   const v = apiUrl.value.trim()
   const url = v && v !== '同源 /api' ? v : ''
+  /*
+   * iOS（2026-11-27，对齐 TV）：地址真源是**壳**（UserDefaults），不是 localStorage。
+   * resolveBase 在 iOS 只认桥注入的 meowIos.apiBase，写 localStorage 会被桥覆盖
+   * （等于没改）。所以要壳落盘 + location.reload() 让桥重新注入。
+   */
+  if (iosBackendConfigurable) {
+    const apply = (window as unknown as {
+      meowIos?: { setApiBackend?: (u: string) => boolean }
+    }).meowIos?.setApiBackend
+    if (typeof apply !== 'function') return
+    apiBusy.value = true
+    try {
+      if (url) {
+        // 同页探活：死地址写进去以后刷新只会看到「后端未连接」
+        if (!(await probeBackendHealth(url))) {
+          apiMsgOk.value = false
+          apiMsg.value = `连不上 ${url}：检查端口、防火墙，或确认那台机器上的后端已启动`
+          return
+        }
+      }
+      apply(url) // '' = 恢复端内后端
+    } finally {
+      apiBusy.value = false
+    }
+    location.reload()
+    return
+  }
   const unchanged = url === (manualApi.value || '')
   // 插件托管且没改：只重连，不把手填地址写进去（否则会变成"手连本机"）
   const keepPlugin = desktop && !manualApi.value && (!url || url === apiBase())
@@ -442,6 +469,16 @@ async function saveAndReconnect() {
   } finally {
     apiBusy.value = false
   }
+}
+
+/** iOS：恢复端内后端（清壳里存的覆盖地址，reload 重新注入桥） */
+function restoreEmbeddedBackend() {
+  const apply = (window as unknown as {
+    meowIos?: { setApiBackend?: (u: string) => boolean }
+  }).meowIos?.setApiBackend
+  if (typeof apply !== 'function') return
+  apply('')
+  location.reload()
 }
 
 /** 恢复"由插件托管"：清掉手填地址，重启后重新问插件要端口 */
@@ -3362,9 +3399,19 @@ const tvMode = isTvShell()
 // 运行时模块/弹幕载荷是能力（moduleCheck）：老壳没有时不显示对应分区。
 const tvModule = hasTvModule()
 const desktop = isDesktop()
-// iOS 壳：ApiServer 跑在 App 进程内（JVM），地址由壳写死 → 只读展示。
+// iOS 壳：ApiServer 默认跑在 App 进程内（JVM）；新壳（2026-11-27 起）也支持
+// 在设置里改连外部后端（壳落 UserDefaults，reload 后由桥注入新 apiBase）。
 const ios = isIosShell()
 const iosInfo = iosShellInfo()
+/** 新壳才有 setApiBackend：老壳保持"只读展示端内后端" */
+const iosBackendConfigurable = computed(
+  () => ios && typeof (iosInfo as { setApiBackend?: unknown }).setApiBackend === 'function',
+)
+/** 当前是否已指向外部后端（生效值不等于端内 JVM 的固定地址） */
+const iosOverrideActive = computed(() => {
+  const b = String(iosInfo.apiBackend || iosInfo.apiBase || '')
+  return !!b && !/^https?:\/\/127\.0\.0\.1:9978\/?$/i.test(b)
+})
 
 /*
  * 「运行时」分区归位（2026-11-26 用户口径：运行时状态不该藏在「搜索与源」里）。
@@ -5828,7 +5875,7 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <div v-if="!ios" class="flex flex-wrap items-center gap-2.5">
+      <div v-if="!ios || iosBackendConfigurable" class="flex flex-wrap items-center gap-2.5">
         <span class="w-20 shrink-0 text-xs text-ink-3">后端地址</span>
         <!--
           输入框始终可编辑：插件托管时也允许改（改完点右边按钮就切到远端）。
@@ -5861,6 +5908,15 @@ onBeforeUnmount(() => {
           @click="usePluginBackend"
         >
           用插件
+        </button>
+        <!-- iOS：恢复端内 JVM 后端（清掉壳里存的覆盖地址） -->
+        <button
+          v-if="iosBackendConfigurable && iosOverrideActive"
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+          title="清掉外部后端地址，改回 App 进程内的端内后端"
+          @click="restoreEmbeddedBackend"
+        >
+          恢复端内后端
         </button>
       </div>
       <!--
@@ -5918,8 +5974,14 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <!-- iOS：可连外部后端（对齐 TV）；地址由壳落盘，reload 后生效 -->
+      <p v-if="iosBackendConfigurable" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+        可填局域网 / Docker / NAS 后端（如
+        <code class="rounded bg-field px-1">http://192.168.1.10:30010</code>），下面的
+        「扫描局域网」能自动发现；地址留空则回到 App 端内后端。
+      </p>
       <!-- Web 端：没有插件，必须填地址 —— 这条不能只靠 placeholder 暗示 -->
-      <p v-if="!desktop" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+      <p v-if="!desktop && !ios" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
         没有本机插件，需要填可访问的后端地址（Docker / NAS / 自建）；留空则用同源
         <code class="rounded bg-field px-1">/api</code>。
       </p>
