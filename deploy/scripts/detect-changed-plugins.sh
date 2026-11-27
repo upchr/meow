@@ -24,10 +24,10 @@ CHANGED=""
 add() { CHANGED="${CHANGED:+$CHANGED,}$1"; }
 if [ -n "$PREV" ]; then
   # 用命令替换判空，不要 `git diff | grep -q`（SIGPIPE + pipefail，踩过）
-  [ -n "$(git diff --name-only "$PREV"..HEAD -- server/drpy)" ] && add drpy
+  [ -n "$(git diff --name-only "$PREV"..HEAD -- server/drpy server/plugin-manifests/drpy.manifest.json)" ] && add drpy
   [ -n "$(git diff --name-only "$PREV"..HEAD -- client/apps/tv/app/src/main/assets/node-payload-danmu.zip)" ] && add danmu
   [ -n "$(git diff --name-only "$PREV"..HEAD -- server/build-plugin-ffmpeg.ps1)" ] && add ffmpeg
-  [ -n "$(git diff --name-only "$PREV"..HEAD -- server/pyrt server/build-plugin-pyrt.ps1)" ] && add pyrt
+  [ -n "$(git diff --name-only "$PREV"..HEAD -- server/pyrt server/build-plugin-pyrt.ps1 server/plugin-manifests/pyrt.manifest.json)" ] && add pyrt
   [ -n "$(git diff --name-only "$PREV"..HEAD -- client/apps/tv/runtime-node client/apps/tv/app/src/main/assets/node-payload-danmu.zip)" ] && add tv-node
   [ -n "$(git diff --name-only "$PREV"..HEAD -- client/apps/tv/runtime-python)" ] && add tv-python
 fi

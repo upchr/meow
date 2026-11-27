@@ -50,7 +50,7 @@
 | 用途 | 字段 |
 |---|---|
 | 弹幕 | `danmakuApi`、`danmakuTencent`、`danmakuOrder`、`danmakuPrefetch`、`danmakuPrefetchLead` |
-| DNS / 源 / 搜索 | `safeDns`、`dnsProvider`、`jsRuntime`、`filterAds`、`searchNoise`、`searchNoiseMode` |
+| DNS / 源 / 搜索 | `safeDns`、`dnsProvider`、`jsRuntime`、`pyRuntimeAddr`、`filterAds`、`searchNoise`、`searchNoiseMode` |
 | 缓存 | `cacheDir`、`cacheQuotaGb`、`cacheEvictMode`、`danmakuCacheQuotaMb`、`danmakuCacheEvictMode`、`ffmpegPath` |
 | 安全 / 网络 | `authToken`、`corsOrigins`、`rateLimit`（`parse`/`proxy`/`windowSec`）、`trustProxy` |
 | 模型转发 | `llmRelay.enabled`（`LlmRelay.java:67-70`） |

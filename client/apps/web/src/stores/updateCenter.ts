@@ -40,7 +40,14 @@ import { hasTvModule, isTvShell } from '@/compat/shell'
 
 export { hasTvModule, isTvShell }
 
-export type UpdateKind = 'app' | 'module' | 'payload' | 'plugins' | 'fpk'
+/*
+ * python = TV 的 Python 运行时模块（com.meow.runtime.python）。
+ *
+ * ★ 2026-11-28 补（用户实测）：node 模块与 Python 模块是**两条独立版本线**，
+ *   但以前只有 node 那条进了更新中心 —— TV 的「检查全部」查不到 Python 模块，
+ *   用户必须先摸到「设置 → 运行时」里单独点，与「一处看全」的定位不符。
+ */
+export type UpdateKind = 'app' | 'module' | 'python' | 'payload' | 'plugins' | 'fpk'
 
 export interface ModuleLatest {
   version: string
@@ -65,6 +72,7 @@ const DAY = 24 * 60 * 60 * 1000
 export const checking = reactive<Record<UpdateKind, boolean>>({
   app: false,
   module: false,
+  python: false,
   payload: false,
   plugins: false,
   fpk: false,
@@ -74,6 +82,7 @@ export const checking = reactive<Record<UpdateKind, boolean>>({
 export const errors = reactive<Record<UpdateKind, string>>({
   app: '',
   module: '',
+  python: '',
   payload: '',
   plugins: '',
   fpk: '',
@@ -83,6 +92,7 @@ export const errors = reactive<Record<UpdateKind, string>>({
 export const lastCheckedAt = reactive<Record<UpdateKind, number>>({
   app: 0,
   module: 0,
+  python: 0,
   payload: 0,
   plugins: 0,
   fpk: 0,
@@ -101,6 +111,15 @@ export const moduleChecked = ref(false)
  * 或「未安装 · 未检查」两条状态叠在一起。
  */
 export const moduleUpdateChecked = ref(false)
+
+/* ── TV 的 Python 运行时模块（另一条版本线，桥方法 pyModule*） ── */
+export const pythonLatest = ref<ModuleLatest | null>(null)
+export const pythonCurrent = ref('')
+export const pythonInstalled = ref(false)
+/** 是否读过 Python 模块安装状态（本地桥，无网络） */
+export const pythonChecked = ref(false)
+/** 本次会话是否真的比对过 Python 模块版本（与 pythonChecked 分开，理由同模块） */
+export const pythonUpdateChecked = ref(false)
 export const payloadLatest = ref<{
   version: string
   size: number
@@ -172,17 +191,21 @@ function setError(kind: UpdateKind, e: unknown, silent: boolean): void {
 /** 自动检查是否到期（默认 24h；手动检查不经过这里） */
 export function autoCheckDue(kind: UpdateKind, maxAgeMs = DAY): boolean {
   const p = getPrefs()
+  /*
+   * python 复用 autoCheckModule 开关：UI 上只有一个「运行时」勾选框，
+   * 两个模块共用一条 24h 节流会少打一次网络，也符合"模块一起查"的直觉。
+   */
   const enabled =
     kind === 'app'
       ? p.autoCheckApp
-      : kind === 'module'
+      : kind === 'module' || kind === 'python'
         ? p.autoCheckModule
         : kind === 'plugins'
           ? p.autoCheckPlugins
           : p.autoCheckFpk
   if (!enabled) return false
   // 平台不支持时不算“到期”，否则每次启动都白跑一次（且永远不会 mark）
-  if (kind === 'module' && !hasTvModule()) return false
+  if ((kind === 'module' || kind === 'python') && !hasTvModule()) return false
   if (kind === 'plugins' && !isDesktop()) return false
   if (kind === 'fpk' && (isDesktop() || isTvShell())) return false
   return Date.now() - (lastCheckedAt[kind] || 0) >= maxAgeMs
@@ -292,6 +315,28 @@ export function hydrateModuleState(): void {
   }
 }
 
+/**
+ * 读 TV Python 模块的安装状态（本地桥，无网络）。
+ *
+ * <p>老壳没有 `pyModuleState` 时整行不显示（与 node 模块同一套能力门禁）；
+ * 桥异常就保持“未检查”，不猜安装状态。
+ */
+export function hydratePythonState(): void {
+  if (!hasTvModule()) return
+  try {
+    const b = tvBridge()
+    if (typeof b.pyModuleState !== 'function') return
+    const raw = b.pyModuleState()
+    if (!raw) return
+    const state = JSON.parse(String(raw))
+    pythonChecked.value = true
+    pythonInstalled.value = !!state.installed
+    pythonCurrent.value = String(state.version || '')
+  } catch {
+    /* 桥返回异常就保持“未检查” */
+  }
+}
+
 /** 应用壳更新（PC/TV）。复用 appUpdate store 的结果，避免两份状态 */
 export async function checkApp(silent = false): Promise<boolean> {
   if (checking.app) return false
@@ -379,6 +424,66 @@ export async function checkModule(silent = false): Promise<boolean> {
     return false
   } finally {
     checking.module = false
+  }
+}
+
+/**
+ * TV Python 运行时模块（`com.meow.runtime.python`）：与 node 模块完全独立的版本线。
+ *
+ * <p>桥只有两参版本（`pyModuleCheck(src, tok)`，没有 Candidates 变体）——
+ * 与「设置 → 运行时」里的安装按钮走同一条路；显式备用源照旧在主源失败时再试。
+ */
+export async function checkPython(silent = false): Promise<boolean> {
+  if (!hasTvModule() || checking.python) return false
+  const b = tvBridge()
+  if (typeof b.pyModuleState !== 'function' || typeof b.pyModuleCheck !== 'function') return false
+  checking.python = true
+  errors.python = ''
+  // 新一轮检查开始：上一次的「已是最新」结论先作废
+  pythonUpdateChecked.value = false
+  try {
+    const state = JSON.parse(String(b.pyModuleState() || '{}'))
+    pythonChecked.value = true
+    pythonInstalled.value = !!state.installed
+    pythonCurrent.value = String(state.version || '')
+    if (!state.installed) {
+      pythonLatest.value = null
+      return false
+    }
+    const src = (await getUpdateSource()) || ''
+    const tok = getUpdateToken()
+    const run = (s: string): Record<string, unknown> => {
+      try {
+        return JSON.parse(String(b.pyModuleCheck(s, tok) || '{}')) as Record<string, unknown>
+      } catch {
+        return { ok: false, error: '检查失败' }
+      }
+    }
+    let chk = run(src)
+    const backup = getBackupUpdateSource()
+    if (chk.ok === false && backup && backup !== src) chk = run(backup)
+    if (chk.ok === false) throw new Error(String(chk.error || '检查失败'))
+    const latestVersion = String(chk.version || '')
+    if (!latestVersion) throw new Error('清单里没有 Python 模块版本')
+    const has = isNewer(latestVersion, pythonCurrent.value)
+    pythonLatest.value = has
+      ? {
+          version: latestVersion,
+          size: Number(chk.size) || 0,
+          abi: String(chk.abi || state.abi || ''),
+          sha256: String(chk.sha256 || ''),
+          url: String(chk.url || ''),
+        }
+      : null
+    pythonUpdateChecked.value = true
+    mark('python')
+    return has
+  } catch (e) {
+    setError('python', e, silent)
+    pythonLatest.value = null
+    return false
+  } finally {
+    checking.python = false
   }
 }
 
@@ -612,6 +717,7 @@ export function seedFpkState(current: string, latest: FpkLatest | null): void {
 export async function runBackgroundChecks(): Promise<void> {
   const jobs: Array<Promise<unknown>> = []
   if (autoCheckDue('module')) jobs.push(checkModule(true))
+  if (autoCheckDue('python')) jobs.push(checkPython(true))
   if (autoCheckDue('plugins')) jobs.push(checkPlugins(true))
   if (autoCheckDue('fpk')) jobs.push(checkFpk(true))
   await Promise.allSettled(jobs)
@@ -619,7 +725,13 @@ export async function runBackgroundChecks(): Promise<void> {
 
 /** 手动“检查全部”：手动不受 24h 节流，也不看自动开关 */
 export async function checkAll(): Promise<void> {
-  await Promise.allSettled([checkModule(false), checkPayload(false), checkPlugins(false), checkFpk(false)])
+  await Promise.allSettled([
+    checkModule(false),
+    checkPython(false),
+    checkPayload(false),
+    checkPlugins(false),
+    checkFpk(false),
+  ])
 }
 
 /** 设置页改了自动检查开关后立即生效（只落 prefs，无需重启） */
@@ -627,7 +739,7 @@ export function autoCheckEnabled(kind: UpdateKind): boolean {
   const p = getPrefs()
   return kind === 'app'
     ? p.autoCheckApp
-    : kind === 'module'
+    : kind === 'module' || kind === 'python'
       ? p.autoCheckModule
       : kind === 'plugins'
         ? p.autoCheckPlugins

@@ -1,11 +1,11 @@
 {
   "_comment": "Python 源侧车：.py 本地执行、.js 转发给本机 drpy。协议与 drpy 同形（POST /{site}/{action} + X-DRPY-Api），所以宿主 callScriptRuntime 一行都不用改。脚本放在 <appData>/py-scripts（私有内容，不入公开库）。★ 解释器随插件走（python/ 子目录，官方 embeddable 3.12），用户不需要预装 Python —— 对齐 node 插件自带 node.exe 的做法。execFallback 才轮到系统 python3/python.exe。",
   "id": "pyrt",
-  "name": "Python 脚本运行时",
+  "name": "Python 运行时",
   "capability": "runtime",
   "required": false,
   "fatal": false,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "exec": "python/python.exe",
   "execFallback": [
     "python3",
@@ -34,9 +34,9 @@
   },
   "inject": {
     "target": "{appData}/data/policy.json",
-    "key": "jsRuntime",
+    "key": "pyRuntimeAddr",
     "value": "http://127.0.0.1:{port}",
     "force": true,
-    "_why": "pyrt 能同时服务 .py 与 .js（转发给 drpy），jsRuntime 该指向它；force 只覆盖另一个本机插件的地址，用户手配的局域网地址仍保留"
+    "_why": "2026-11-28 中期分层：pyrt 只声明「Python 引擎地址」（pyRuntimeAddr），不再抢 jsRuntime。键名用 pyRuntimeAddr 而不是 pyRuntime —— iOS 壳已把 policy.pyRuntime 用作启动状态对象（{state,error,at}），地址与状态必须分键。force 只覆盖本地插件地址，用户手配的局域网地址仍保留。"
   }
 }

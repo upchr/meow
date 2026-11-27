@@ -984,7 +984,61 @@ fn inject_value(target: &Path, key: &str, value: &str, force: bool) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::exe_under;
+    use super::{exe_under, inject_value};
+    use std::path::PathBuf;
+
+    /// 注入语义（2026-11-28 中期分层后）：
+    ///   · force 只覆盖**本机插件**留下的地址（127.0.0.1 / localhost）
+    ///   · 用户手配的局域网/NAS 地址永远保留
+    ///   · 写 pyRuntimeAddr 不能碰 jsRuntime（两个引擎两个键）
+    fn tmp_policy(tag: &str, body: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        let uniq = format!(
+            "meow-inject-{}-{}-{}.json",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        p.push(uniq);
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    fn read_json(p: &PathBuf) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn inject_force_overwrites_local_plugin_only() {
+        // pyrt 抢 pyRuntimeAddr：旧值是另一个本机插件（drpy 的 9330）→ 覆盖
+        let f = tmp_policy(
+            "force-local",
+            r#"{"jsRuntime":"http://127.0.0.1:9330","pyRuntimeAddr":"http://127.0.0.1:19331"}"#,
+        );
+        inject_value(&f, "pyRuntimeAddr", "http://127.0.0.1:19400", true).unwrap();
+        let v = read_json(&f);
+        assert_eq!(v["pyRuntimeAddr"], "http://127.0.0.1:19400");
+        // 另一个键必须原样不动
+        assert_eq!(v["jsRuntime"], "http://127.0.0.1:9330");
+
+        // 用户手配的 NAS 地址 → 不覆盖（force 也不例外）
+        let f2 = tmp_policy(
+            "force-lan",
+            r#"{"pyRuntimeAddr":"http://192.168.1.20:19331"}"#,
+        );
+        inject_value(&f2, "pyRuntimeAddr", "http://127.0.0.1:19400", true).unwrap();
+        let v2 = read_json(&f2);
+        assert_eq!(v2["pyRuntimeAddr"], "http://192.168.1.20:19331");
+
+        // 无 force 时不覆盖任何非空旧值（drpy 以前就是这个行为）
+        let f3 = tmp_policy("noforce", r#"{"jsRuntime":"http://127.0.0.1:19331"}"#);
+        inject_value(&f3, "jsRuntime", "http://127.0.0.1:9330", false).unwrap();
+        let v3 = read_json(&f3);
+        assert_eq!(v3["jsRuntime"], "http://127.0.0.1:19331");
+    }
 
     /// 孤儿进程判定的边界：只认"目录 + 分隔符"前缀。
     ///

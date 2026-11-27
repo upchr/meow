@@ -98,7 +98,17 @@ if (-not $PyrtVersion) {
         if ($line) { $PyrtVersion = ($line -split '=', 2)[1].Trim() }
     }
 }
-if (-not $PyrtVersion -or $PyrtVersion -eq 'latest') { $PyrtVersion = '0.1.0' }
+if (-not $PyrtVersion -or $PyrtVersion -eq 'latest') {
+    # ★ 代码里的 pyrt 版本（插件 manifest）才是构建 tag 的真源。
+    #   以前这里写死 '0.1.0' —— tag 永远停在 0.1.0，而 pyrt.py 一直在改，
+    #   Docker 用户就拿不到修复（实测 Hub 上只有 0.1.0，2026-11-26 推，
+    #   而 pyrt.py 在 11-27 修过「探测持锁堵死 .py 请求」）。
+    $mf = Join-Path $root 'server\plugin-manifests\pyrt.manifest.json'
+    if (Test-Path $mf) {
+        $PyrtVersion = [string](([IO.File]::ReadAllText($mf, [Text.Encoding]::UTF8) | ConvertFrom-Json).version)
+    }
+}
+if (-not $PyrtVersion) { $PyrtVersion = '0.1.0' }
 
 $webImage = "$User/${RepoPrefix}web"
 $apiImage = "$User/${RepoPrefix}apiserver"

@@ -61,6 +61,8 @@ services:
       MEOW_PORT: "9979"
       # 用 `-` 而非 `:-`：显式写空串（MEOW_DANMAKU_API=）表示"不用聚合服务"，
       MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://drpy:9330}
+      # .py 源直连 pyrt（2026-11-28 中期分层；留空回落 jsRuntime）
+      MEOW_PY_RUNTIME: ${MEOW_PY_RUNTIME-http://pyrt:19331}
       # `:-` 会把空串当未设置，置空就失效了。
       MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
       # 写操作令牌：保护收藏/进度/片库删除/缓存清理/配置导入等写端点。
@@ -113,7 +115,7 @@ services:
     restart: unless-stopped
     networks: [meow]
 
-  # pyrt 运行时（.py 源 + .js 转发）：apiserver 的 MEOW_JS_RUNTIME 默认指向它。
+  # pyrt 运行时（.py 源）：apiserver 的 MEOW_PY_RUNTIME 默认指向它；.js 走 drpy。
   #
   # ★ 本地构建链一直漏了这一段（2026-11-26 查）：docker-compose.yml 里有 pyrt 服务
   #   但镜像 chrplus/meow-pyrt 从没推到 Docker Hub（Hub 上 404），而这份 build 版
@@ -124,7 +126,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.pyrt
-    image: ${PYRT_IMAGE:-chrplus/meow-pyrt:${PYRT_VERSION:-0.1.0}}
+    image: ${PYRT_IMAGE:-chrplus/meow-pyrt:${PYRT_VERSION:-0.1.4}}
     container_name: meow-pyrt
     ports:
       - "${PYRT_PORT:-30014}:19331"

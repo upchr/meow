@@ -229,45 +229,12 @@ public class PythonService extends Service {
         }
     }
 
-    private String readJsRuntime() {
-        try {
-            String cur = core.DataPaths.read("policy.json");
-            if (cur == null || cur.trim().isEmpty()) return "";
-            return new JSONObject(cur).optString("jsRuntime", "");
-        } catch (Throwable t) {
-            return "";
-        }
-    }
-
-    private void publishPolicy(int port) {
-        try {
-            String cur = core.DataPaths.read("policy.json");
-            JSONObject o = cur == null || cur.trim().isEmpty()
-                    ? new JSONObject() : new JSONObject(cur);
-            String local = "http://127.0.0.1:" + port;
-            String old = o.optString("jsRuntime", "");
-            if (local.equals(old)) return;
-            if (!old.isEmpty() && !isOurEphemeral(old)) {
-                android.util.Log.i(TAG, "jsRuntime: 保留已配置的运行时 " + old);
-                return;
-            }
-            o.put("jsRuntime", local);
-            boolean ok = core.DataPaths.write("policy.json", o.toString());
-            android.util.Log.i(TAG, "jsRuntime -> " + local + " written=" + ok);
-        } catch (Throwable t) {
-            android.util.Log.w(TAG, "publishPolicy failed", t);
-        }
-    }
-
-    private static boolean isOurEphemeral(String addr) {
-        if (!addr.contains("127.0.0.1") && !addr.contains("localhost")) return false;
-        try {
-            int port = java.net.URI.create(addr).getPort();
-            return port >= 32768 && port <= 60999;
-        } catch (Throwable t) {
-            return false;
-        }
-    }
+    /*
+     * 2026-11-28 中期分层：Python 端口的 policy 发布搬到
+     * GatewayServer.publishPyRuntimeAddr()，写的是 pyRuntimeAddr（不是 jsRuntime）。
+     * 这里原来的 readJsRuntime()/publishPolicy() 从没被调用过（死代码），一并删掉，
+     * 免得下次有人照着它再去抢 jsRuntime。
+     */
 
     private void state(boolean running, int port, String version, String error) {
         try {

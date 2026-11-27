@@ -185,7 +185,7 @@ Cache-Control: no-store, no-cache, must-revalidate
 - `GET` 返回 policy 全量但**摘掉 `authToken`**、补 `authRequired`；`POST` 浅合并
   （只覆盖传入的键），返回完整 policy（**含 `authToken`**）。坏 JSON → 400。
 常用键：`authToken`、`corsOrigins`、`rateLimit{parse,proxy,windowSec}`、`filterAds`、
-`safeDns`、`dnsProvider`、`jsRuntime`、`danmakuApi`、`trustProxy`、`cacheQuotaGb`、
+`safeDns`、`dnsProvider`、`jsRuntime`、`pyRuntimeAddr`、`danmakuApi`、`trustProxy`、`cacheQuotaGb`、
 `cacheEvictMode`、`cacheDir`、`jarStrictMd5`、`llmRelay.enabled`。
 `jarStrictMd5=true` 时 jar 的 `;md5;` 不一致按致命错误处理（默认 `false`：
 不匹配仍挂载 + WARN，避免配置作者忘了改 hash 就整站消失）。

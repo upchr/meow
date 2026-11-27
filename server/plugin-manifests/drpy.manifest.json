@@ -1,10 +1,10 @@
 {
   "id": "drpy",
-  "name": "drpy 脚本运行时",
+  "name": "drpy 运行时",
   "capability": "runtime",
   "required": false,
   "fatal": false,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "exec": "node",
   "execFallback": ["../node/node.exe", "../node/node", "node.exe"],
   "args": ["server.js"],
@@ -23,6 +23,8 @@
   "inject": {
     "target": "{appData}/data/policy.json",
     "key": "jsRuntime",
-    "value": "http://127.0.0.1:{port}"
+    "value": "http://127.0.0.1:{port}",
+    "force": true,
+    "_why": "2026-11-28 中期分层：jsRuntime 归 drpy 独占。pyrt 不再写这个键（改写 pyRuntimeAddr）。force 只覆盖另一个本机插件留下的地址（例如旧版 pyrt 写的 127.0.0.1:19331），用户手配的局域网地址仍保留。"
   }
 }

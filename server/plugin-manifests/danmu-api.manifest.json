@@ -1,6 +1,6 @@
 {
   "id": "danmu-api",
-  "name": "弹幕聚合服务",
+  "name": "弹幕组件",
   "capability": "danmaku",
   "required": false,
   "fatal": false,

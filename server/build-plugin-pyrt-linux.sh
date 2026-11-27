@@ -41,16 +41,18 @@ if [ -d "$SRC/scripts" ]; then
 fi
 
 # manifest：exec 写 python3 → fpk 的 meowd 会走 deps.python_path()（fnOS 依赖
-# python312）或 PATH 里的系统 python3；force=true 让它接管 jsRuntime（pyrt 能
-# 同时服务 .py 与转发 .js）。
+# python312）或 PATH 里的系统 python3。
+# ★ 2026-11-28 中期分层：pyrt 只声明 pyRuntimeAddr（.py 源直连它），不再抢
+#   jsRuntime —— jsRuntime 归 drpy，两个引擎互不代理。键名用 pyRuntimeAddr
+#   而不是 pyRuntime（iOS 用 policy.pyRuntime 存启动状态对象）。
 cat > "$OUT/manifest.json" <<'JSON'
 {
   "id": "pyrt",
-  "name": "Python 脚本运行时",
+  "name": "Python 运行时",
   "capability": "runtime",
   "required": false,
   "fatal": false,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "exec": "python3",
   "execFallback": ["python"],
   "args": ["pyrt.py"],
@@ -68,7 +70,7 @@ cat > "$OUT/manifest.json" <<'JSON'
   },
   "inject": {
     "target": "{appData}/data/policy.json",
-    "key": "jsRuntime",
+    "key": "pyRuntimeAddr",
     "value": "http://127.0.0.1:{port}",
     "force": true
   }

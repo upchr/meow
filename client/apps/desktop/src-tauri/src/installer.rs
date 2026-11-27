@@ -1768,7 +1768,7 @@ mod tests {
             {"id": 222, "name": "packages.json"}
           ]
         }"#;
-        let (url, repo) = manifest_asset_from(rel).expect("应能找到 packages.json");
+        let (url, repo) = manifest_asset_from(rel, true).expect("应能找到 packages.json");
         assert_eq!(url, "https://api.github.com/repos/upchr/meow/releases/assets/222");
         assert_eq!(repo, "upchr/meow");
     }
@@ -1779,9 +1779,9 @@ mod tests {
           "url": "https://api.github.com/repos/upchr/meow/releases/1",
           "assets": [{"id": 111, "name": "drpy-0.1.0.zip"}]
         }"#;
-        assert!(manifest_asset_from(rel).is_none());
-        assert!(manifest_asset_from("not json").is_none());
-        assert!(manifest_asset_from("{}").is_none());
+        assert!(manifest_asset_from(rel, true).is_none());
+        assert!(manifest_asset_from("not json", true).is_none());
+        assert!(manifest_asset_from("{}", true).is_none());
     }
 
     /// 标准链接 → API 端点的前置条件：只处理 releases/download 形状。

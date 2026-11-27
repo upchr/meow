@@ -2421,6 +2421,12 @@ public class ApiServer {
             o.put("jsRuntimePy", rtPyCap == null ? "unknown" : ((Boolean) rtPyCap ? "yes" : "no"));
             o.put("jsRuntimeFails", scriptRuntimeFails.get());
             /*
+             * 独立 Python 引擎地址（2026-11-28 中期分层）：非空 = .py 源直连它，
+             * 空 = 回落 jsRuntime（pyrt 单地址 / iOS 端内单地址）。
+             * 排障时一眼看出这台机器是"分开配"还是"单地址兼容"。
+             */
+            o.put("pyRuntimeAddr", pyRuntimeAddr());
+            /*
              * 进程内存（iOS 壳由 MemoryProbe 每 30s 写 gateway/mem.json）。
              * iOS 没有 /proc，Java 侧拿不到本进程 RSS；这两个数是判断
              * “切后台回来进程没了”到底是不是内存压力的唯一依据。
@@ -4989,18 +4995,103 @@ public class ApiServer {
     /** 上一次的状态，只为"翻转时才打日志"（避免刷屏）。 */
     private static volatile boolean scriptRuntimeBreakerOpenPreviously = false;
 
+    /**
+     * Python 引擎地址（`policy.pyRuntimeAddr`，或环境变量 `MEOW_PY_RUNTIME`）。
+     *
+     * <p>★ 键名是 <b>pyRuntimeAddr</b>，不是 pyRuntime：iOS 壳已经把
+     * `policy.pyRuntime` 用作**启动状态对象**（`{state,error,at}`，见
+     * `client/apps/ios/Meow/PythonRuntime.swift`）。地址与状态必须分键，
+     * 否则 iOS 侧写一次状态就把地址覆盖成 JSON 对象。
+     *
+     * <p>★ iOS 合并提示（2026-11-28，给 iOS 会话看的）：端内 **不需要**写这个键 ——
+     * iOS 是"单地址"形态（jsRuntime 指向端内 pyrt，.js 由它转给端内 node），
+     * 这里返回空时 `callScriptRuntime` 会自动回落到 jsRuntime，iOS 行为一字不变。
+     * 将来若要把端内 pyrt 拆成独立 py 地址，只需在 PythonRuntime.swift 里
+     * 往 policy 写 `pyRuntimeAddr`，本端不用再改。
+     */
+    private static String pyRuntimeAddr() {
+        String a = "";
+        try {
+            a = loadPolicy().optString("pyRuntimeAddr", "").trim();
+        } catch (Throwable ignored) {
+            /* policy 读失败按"没配"处理，回落 jsRuntime */
+        }
+        if (a.isEmpty()) a = System.getenv().getOrDefault("MEOW_PY_RUNTIME", "").trim();
+        return a.replaceAll("/$", "");
+    }
+
+    /**
+     * 脚本运行时调用（两层引擎分开路由，2026-11-28 中期方案）。
+     *
+     * <p>路由规则：
+     * <ul>
+     *   <li>{@code .py} 源 + 配了 {@code pyRuntimeAddr} → **直连 Python 引擎**（pyrt），
+     *       不再要求它支持 .js，也不再依赖 drpy 一定在线</li>
+     *   <li>{@code .py} 源 + 没配 → 回落 jsRuntime（兼容老部署：pyrt 同时服务 .py、
+     *       把 .js 转发给 drpy；iOS 端内也是这个形态）</li>
+     *   <li>{@code .js} 源 → jsRuntime（drpy / QuickJS），与以前一致</li>
+     * </ul>
+     *
+     * <p>独立 Python 引擎连接被拒（插件被卸 / 容器没起）时再回落一次 jsRuntime，
+     * 两条都不可达才报错 —— 这样"卸载 pyrt"只会让 .py 变慢/报错，绝不会把 .js 带死。
+     */
     private static String callScriptRuntime(String site, String api, String action, String body)
             throws IOException {
-        String base = loadPolicy().optString("jsRuntime", "");
+        String jsBase = loadPolicy().optString("jsRuntime", "");
         // 容器部署不方便改 policy.json，允许用环境变量兜底（compose 里指向 drpy 服务）
-        if (base.isEmpty()) base = System.getenv().getOrDefault("MEOW_JS_RUNTIME", "");
+        if (jsBase.isEmpty()) jsBase = System.getenv().getOrDefault("MEOW_JS_RUNTIME", "");
+        String pyBase = isPyApi(api) ? pyRuntimeAddr() : "";
+        boolean usePy = !pyBase.isEmpty();
+        String base = usePy ? pyBase : jsBase;
         if (base.isEmpty()) {
             return "{\"code\":-1,\"msg\":\"jsRuntime 未配置：该源是 drpy 脚本，需要先启动 JS 运行时插件\"}";
         }
-        // .py 源 + 纯 JS 运行时：直接给准确原因（否则 drpy 会报语法错误）
-        if (isPyApi(api) && !runtimeSupportsPy()) {
+        // 走兼容路径（.py 但没有独立 Python 引擎）时，要求 jsRuntime 自己声明支持 py
+        if (!usePy && isPyApi(api) && !runtimeSupportsPy()) {
             return "{\"code\":-1,\"msg\":\"jsRuntime 只支持 .js：.py 源需要 pyrt 或内嵌 CPython（当前运行时 /health 报告 py=false）\"}";
         }
+        String kind = usePy ? "py runtime" : "js runtime";
+        try {
+            return postToScriptRuntime(base, site, api, action, body);
+        } catch (java.net.SocketTimeoutException te) {
+            /*
+             * 超时必须在这里转成 JSON，不能让 IOException 冒泡出去。
+             *
+             * 原因：call() 只 catch 自己的逻辑异常，IOException 会直接抛到
+             * 搜索任务层；那一层把所有异常都变成空串，于是"运行时超时"和
+             * "这个源没内容"在日志里完全无法区分 —— 而前者正是需要驱动熔断的。
+             */
+            /*
+             * ★ 整条文案必须一起 quote。早先写成
+             *   "{\"msg\":\"...: " + JSONObject.quote(x) + "\"}"
+             * 会在 x 自带引号时产出 `"msg":"...: "Read timed out""` —— 非法 JSON，
+             * 前端直接解析失败（实测 18av_py 等重脚本超时即触发）。
+             */
+            return "{\"code\":-1,\"msg\":"
+                    + JSONObject.quote(kind + " SocketTimeoutException: " + String.valueOf(te.getMessage()))
+                    + "}";
+        } catch (java.net.ConnectException ce) {
+            // 独立 Python 引擎不可达 → 回落 jsRuntime 再试一次（老部署 pyrt 在 jsRuntime 上）
+            String jsNorm = jsBase.replaceAll("/$", "");
+            if (usePy && !jsNorm.isEmpty() && !jsNorm.equals(base)) {
+                core.LogBuffer.warn("runtime", "pyRuntimeAddr 不可达（" + base + "）→ 回落 jsRuntime");
+                try {
+                    return postToScriptRuntime(jsBase, site, api, action, body);
+                } catch (java.net.ConnectException ce2) {
+                    return "{\"code\":-1,\"msg\":"
+                            + JSONObject.quote("script runtime Connection refused: " + String.valueOf(ce2.getMessage()))
+                            + "}";
+                }
+            }
+            return "{\"code\":-1,\"msg\":"
+                    + JSONObject.quote(kind + " Connection refused: " + String.valueOf(ce.getMessage()))
+                    + "}";
+        }
+    }
+
+    /** 实际发一次 {@code POST /{site}/{action}} 给脚本运行时（js/py 共用协议）。 */
+    private static String postToScriptRuntime(String base, String site, String api,
+                                              String action, String body) throws IOException {
         String url = base.replaceAll("/$", "") + "/" + URLEncoder.encode(site, "UTF-8")
                 + "/" + URLEncoder.encode(action, "UTF-8");
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
@@ -5040,27 +5131,6 @@ public class ApiServer {
                 return "{\"code\":-1,\"msg\":" + JSONObject.quote("js runtime HTTP " + code + ": " + (text.length() > 200 ? text.substring(0, 200) : text)) + "}";
             }
             return emptyFallback(action, text);
-        } catch (java.net.SocketTimeoutException te) {
-            /*
-             * 超时必须在这里转成 JSON，不能让 IOException 冒泡出去。
-             *
-             * 原因：call() 只 catch 自己的逻辑异常，IOException 会直接抛到
-             * 搜索任务层；那一层把所有异常都变成空串，于是"运行时超时"和
-             * "这个源没内容"在日志里完全无法区分 —— 而前者正是需要驱动熔断的。
-             */
-            /*
-             * ★ 整条文案必须一起 quote。早先写成
-             *   "{\"msg\":\"...: " + JSONObject.quote(x) + "\"}"
-             * 会在 x 自带引号时产出 `"msg":"...: "Read timed out""` —— 非法 JSON，
-             * 前端直接解析失败（实测 18av_py 等重脚本超时即触发）。
-             */
-            return "{\"code\":-1,\"msg\":"
-                    + JSONObject.quote("js runtime SocketTimeoutException: " + String.valueOf(te.getMessage()))
-                    + "}";
-        } catch (java.net.ConnectException ce) {
-            return "{\"code\":-1,\"msg\":"
-                    + JSONObject.quote("js runtime Connection refused: " + String.valueOf(ce.getMessage()))
-                    + "}";
         } finally {
             c.disconnect();
         }
