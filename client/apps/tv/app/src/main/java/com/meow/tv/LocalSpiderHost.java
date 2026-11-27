@@ -58,6 +58,19 @@ public final class LocalSpiderHost {
     private static final Map<String, DexClassLoader> LOADERS = new ConcurrentHashMap<>();
     /** 内容 md5 → loader：同内容的 jar 换个 URL 不再建第二份（类对象翻倍）。 */
     private static final Map<String, DexClassLoader> BY_HASH = new ConcurrentHashMap<>();
+    /*
+     * jar 失败负缓存：key = jarUrl，value = 失败时刻（elapsedRealtime）。
+     *
+     * ★ 实测（2026-11-27 .76 MuMu）：网关 boot 时 initAfterArgs 对每个站点
+     *   spiderClassPresent → loadClassFromJars → prepare 同步下载；配置里的
+     *   假 jar（gelonghui PNG）每次 15~45s 网络超时，137 站逐个探测 = 每站
+     *   重下一遍，GatewayServer.class 锁全程被 boot 持有 —— 设置页点
+     *   「启用本机执行」直接卡死，9978 永远不开。失败结果必须记住，
+     *   TTL 内不再重试；恢复窗口靠 TTL 过期，换配置走 clear()。
+     */
+    private static final Map<String, Long> FAILED_AT = new ConcurrentHashMap<>();
+    /** 负缓存有效期：过期后允许重试一次（网络恢复/镜像修复场景）。 */
+    private static final long FAILED_TTL_MS = 120_000L;
     /** 最近一次失败原因，给 UI 展示 */
     private static volatile String lastError = "";
 
@@ -93,6 +106,15 @@ public final class LocalSpiderHost {
             return false;
         }
         if (LOADERS.containsKey(jarUrl)) return true;
+        // 负缓存命中：TTL 内直接判失败，不去碰网络（防启动期被坏 jar 卡死，见 FAILED_AT 注释）
+        Long failedAt = FAILED_AT.get(jarUrl);
+        if (failedAt != null) {
+            if (android.os.SystemClock.elapsedRealtime() - failedAt < FAILED_TTL_MS) {
+                lastError = "jar 近期下载失败，暂不重试：" + jarUrl;
+                return false;
+            }
+            FAILED_AT.remove(jarUrl);
+        }
         try {
             File dir = new File(ctx.getCodeCacheDir(), DIR);
             if (!dir.exists() && !dir.mkdirs()) {
@@ -131,6 +153,7 @@ public final class LocalSpiderHost {
             } else if (!jar.isFile() || (!md5.isEmpty() && !md5.equals(md5Of(jar)))) {
                 // 缓存命中且 md5 一致就不重复下载（Fongmi 同样做法）
                 if (!download(jarUrl, jar, md5)) {
+                    FAILED_AT.put(jarUrl, android.os.SystemClock.elapsedRealtime());
                     lastError = "jar 下载失败：" + jarUrl;
                     return false;
                 }
@@ -142,6 +165,7 @@ public final class LocalSpiderHost {
                     // （Fongmi 是重下，我们删了下次自然重下，效果一致但不死循环）
                     //noinspection ResultOfMethodCallIgnored
                     jar.delete();
+                    FAILED_AT.put(jarUrl, android.os.SystemClock.elapsedRealtime());
                     lastError = "jar 校验失败：期望 " + md5 + "，实际 " + got;
                     return false;
                 }
@@ -516,6 +540,8 @@ public final class LocalSpiderHost {
         INSTANCES.clear();
         LOADERS.clear();
         BY_HASH.clear();
+        // 换配置 = 用户明确给了新 jar 集，负缓存一并失效允许重试
+        FAILED_AT.clear();
         File dir = new File(ctx.getCodeCacheDir(), DIR);
         File[] files = dir.listFiles();
         if (files != null) for (File f : files) {
