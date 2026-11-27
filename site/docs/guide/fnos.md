@@ -35,7 +35,7 @@
 1. 先按 FnDepot 仓库的说明把 FnDepot 装好
 2. 打开 FnDepot → 左侧「外部源管理」→ 右上「添加源」
 3. 源名称随意（如「CHRPLUS 应用源」），源地址填 `https://github.com/upchr/FnDepot`
-   （国内镜像 `https://gitee.com/upchr/FnDepot`）
+   （Gitee 镜像 `https://gitee.com/upchr/FnDepot` 只同步到 1.2.27，新版本只在 GitHub 源）
 4. 保存后等列表里状态变成「成功」，到「应用仓库」搜「猫窝」→ 进详情 → 「下载」
 
 ![FnDepot 的「外部源管理」：左侧进入，右上「添加源」，列表里能看到每个源的同步状态](/screenshots/fndepot-add-source.png)
@@ -44,7 +44,8 @@
 
 ![FnDepot 里的猫窝详情：来源 CHRPLUS 应用源，按机器架构自动匹配安装包](/screenshots/fndepot-install-meow.png)
 
-源同步失败（状态显示「全部失败」）时，先确认 NAS 能访问 GitHub，不行就换 Gitee 镜像再试。
+源同步失败（状态显示「全部失败」）时，先确认 NAS 能访问 GitHub。注意 Meow 的包体也在
+GitHub Release 上（1.2.27 之后的镜像不再带包），NAS 连不上 GitHub 时无法安装/更新。
 
 ## 装好之后
 

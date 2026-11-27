@@ -13,7 +13,8 @@
 #   `fpk-verify-1.0.8` 这类名字**不会触发**。
 # ★ **不监听 push 到 main**：fpk 只在发版/补包时构建，日常提交不烧额度。
 # ★ **两条索引通道**（与 TV/PC 的 packages.json 同一形态），**都只在 Publish 之后写**：
-#   · FnDepot `fnpack.json`：飞牛应用中心正式源，包体自托管在这条通道里
+#   · FnDepot `fnpack.json`：飞牛应用中心正式源，**只存索引与图标**，
+#     download_url 是主仓 Release 绝对直链（2026-11-27 起，包体不再入库）
 #   · `fpk-updates` 分支的 `fpk.json`：主仓镜像索引，download_url 指向本次 Release 的资产，
 #     **合并写入**而不是覆盖（补发旧版本不顶掉新版本）
 #   release.yml 的 sync-packages 会跳过 fpk-v*，不会误生成 packages.json。
@@ -47,8 +48,9 @@
 # ═══════════════════════════════════════════════════════════════════════
 #
 # `release: published` 触发 index-after-publish：它从**已发布的 Release** 里下载
-# meow_*.fpk（两个架构都必须在），校验 sha256 后把两个包 + fnpack.json 一起提交到
-# upchr/FnDepot（V2 索引），同时合并写 `fpk-updates` 分支的镜像索引。
+# meow_*.fpk（两个架构都必须在），校验 sha256 后把 **fnpack.json** 提交到
+# upchr/FnDepot（V2 索引，download_url 写该 Release 的绝对直链），同时合并写
+# `fpk-updates` 分支的镜像索引。★ 2026-11-27 起 FnDepot 不再接收包体。
 #
 # ★ 为什么不再在构建时写：draft 是「还没发出去」的草稿。以前 fpk 在 draft 阶段就
 #   推 FnDepot，用户能装到一个官方还没 Publish 的版本；点 Publish 之前没法撤回。
@@ -858,13 +860,10 @@ jobs:
           fi
           D="$RUNNER_TEMP/FnDepot"
           AUTH="https://x-access-token:${TOKEN}@github.com/upchr/FnDepot.git"
-          # ★ 不整仓 clone：仓库里 28 个 fpk（842MB）对写索引毫无用处——我们只需要
-          #   fnpack.json，再把自己那两个新包 `git add` 进去。
-          #   --filter=blob:none 让 git 只拉树、不拉历史 blob；--depth=1 不拉历史提交；
-          #   sparse-checkout 把 meow/*.fpk 排除出工作树。
-          #   实测（2026-11-16）：1.3s / .git 3.7MB（原 842MB / 14s）。
-          #   ★ 包体仍必须留在 **index** 里（源协议要求相对 download_url 指向本仓库），
-          #   所以是"不进工作树"，不是"从仓库删掉"。
+          # ★ 2026-11-27 起 FnDepot 只存索引与图标（包体由主仓 Release 托管），
+          #   仓库体积 KB 级。仍然保留 --depth=1 --filter=blob:none：
+          #   拉取更快、也不会因为将来有人误提交大文件而卡住。
+          #   sparse-checkout 规则保留（现在没有匹配文件，纯属防御）。
           mkdir -p "$D"
           git -C "$D" init -q
           git -C "$D" remote add origin "https://github.com/upchr/FnDepot.git"
@@ -935,11 +934,15 @@ jobs:
           NEW="$RUNNER_TEMP/fnpack.new.json"
           fail() { echo "::error::索引未更新：$*"; exit 1; }
 
-          # download_url 写相对路径：源协议规定「相对本仓库根目录」，镜像（gitee）才跟着走；
-          # 消费方按自己的基准解析 —— 客户端侧已把 jsDelivr 索引归一到 raw 再解析，
-          # 不再落回 jsDelivr（>20MB 会被 jsDelivr 403）。
-          XURL="./meow/meow_${VER}_x86.fpk"
-          AURL="./meow/meow_${VER}_arm.fpk"
+          # ★ download_url 写**主仓 Release 绝对直链**（2026-11-27 改造）：
+          #   FnDepot 不再托管 meow 包体，仓库只留索引与图标，体积恒定在 KB 级。
+          #   依据：官方 FnDepot 说明明确「所有资源与 FPK 均由 JSON 内 URL 定位
+          #   （绝对或相对）」；Release 资产发布后不可变，tag 不移动，URL 永久有效。
+          #   代价：gitee 镜像只能镜像索引，包体仍走 GitHub（国内可能慢）。
+          # ★ 不用 gitee：镜像仓库里没有包体，相对路径会 404。
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          XURL="${BASE}/meow_${VER}_x86.fpk"
+          AURL="${BASE}/meow_${VER}_arm.fpk"
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
           # 只赋值 apps.meow.releases[$ver]；同版本重跑会覆盖自己那条，
@@ -983,24 +986,22 @@ jobs:
 
           mv "$NEW" "$IDX"
 
-          mkdir -p "$REPO/meow"
+          # ★ 2026-11-27 起不再把 fpk 拷进 FnDepot：索引里的 download_url 是主仓
+          #   Release 绝对直链，库内没有包体。校验资产确实存在于本次 Release
+          #   （sha/size 已由上游步骤从发布资产算出，这里只断言本地有产物可核对）。
           for arch in x86 arm; do
             SRC="$ART/$arch/meow_${VER}_${arch}.fpk"
-            [ -s "$SRC" ] || fail "缺少 $SRC，包体不会进 FnDepot"
-            cp "$SRC" "$REPO/meow/"
+            [ -s "$SRC" ] || fail "缺少 $SRC，索引里的直链会指向不存在的资产"
           done
-          ls -l "$REPO/meow"
+          echo "索引已写入主仓 Release 直链（不落包体到 FnDepot）"
 
-      # 只保留最近 keep 版（默认 5）：索引条目与包体文件一起删。
+      # 只保留最近 keep 版（默认 5）：只删索引条目。
       #
       # 为什么 5：客户端只取"大于当前版本的最大值"，中间版本没有功能作用；保留的多是
       # 兜底——os_min_version 上调后老系统要能回退到低版本，以及商店旧索引缓存窗口。
-      # 每版两 arch 合计 ≈ 42MB（x86 21.0 / arm 20.9，1.2.16 实测），多留 2 版 ≈ +84MB。
+      # ★ 2026-11-27 起包体不在 FnDepot（download_url 是主仓 Release 绝对直链），
+      #   所以这里没有 "包体文件一起删" 这一步；主仓 Release 资产永久保留。
       # ★ 若以后大幅上调 os_min_version，记得临时把 keep 调大或手工留一版。
-      #
-      # ★ 删文件用 `git update-index --index-info`，不能用 `git rm`：sparse + blob:none
-      #   的克隆里旧包 blob 不在本地，`git rm`/`--force-remove` 会去读对象并报
-      #   "unable to read <sha>"（本地实测踩过）。index-info 只改索引，不碰对象库。
       - name: 精简旧版本
         id: depotprune
         if: steps.depotwrite.outcome == 'success'
@@ -1029,31 +1030,6 @@ jobs:
           DROP=("${ALL[@]:0:drop_n}")
           KEPT=("${ALL[@]:drop_n}")
 
-          # 收集要删的包体文件（只删 ./meow/ 形态；绝对 URL 指向的 Release 资产不归这里管）
-          TO_DELETE=()
-          for v in "${DROP[@]}"; do
-            while IFS= read -r u; do
-              case "$u" in
-                ./meow/*)
-                  used=0
-                  for k in "${KEPT[@]}"; do
-                    if jq -e --arg v "$k" --arg u "$u" \
-                      '[.apps.meow.releases[$v].packages[].download_url] | index($u) != null' \
-                      "$IDX" >/dev/null; then used=1; break; fi
-                  done
-                  [ "$used" = "1" ] || TO_DELETE+=("${u#./}")
-                  ;;
-              esac
-            done < <(jq -r --arg v "$v" '.apps.meow.releases[$v].packages[]?.download_url // empty' "$IDX" | tr -d '\r')
-          done
-
-          for p in "${TO_DELETE[@]:-}"; do
-            [ -n "$p" ] || continue
-            printf '0 %s\t%s\n' "0000000000000000000000000000000000000000" "$p" \
-              | git update-index --index-info
-            rm -f "$p" 2>/dev/null || true
-          done
-
           printf '%s\n' "${DROP[@]}" \
             | jq -R -s 'split("\n") | map(select(length > 0))' > "$RUNNER_TEMP/drop.json"
           jq --slurpfile drop "$RUNNER_TEMP/drop.json" \
@@ -1064,7 +1040,7 @@ jobs:
           # 断言：保留的版本一个不少、删掉的确实不在了
           jq -e --argjson keep "$KEEP" '.apps.meow.releases | length == $keep' "$IDX" >/dev/null \
             || fail "精简后版本数与 keep=$KEEP 不一致"
-          echo "已精简：删除 ${DROP[*]}；保留 ${KEPT[*]}（包体删除 ${#TO_DELETE[@]} 个）"
+          echo "已精简：删除 ${DROP[*]}；保留 ${KEPT[*]}（只删索引条目，包体在主仓 Release）"
 
       - name: 提交并推送
         id: depotpush
@@ -1079,10 +1055,9 @@ jobs:
           fail() { echo "::error::索引未更新：$*"; exit 1; }
           cd "$REPO"
           AUTH="https://x-access-token:${TOKEN}@github.com/upchr/FnDepot.git"
-          # ★ --sparse：meow/*.fpk 在 sparse-checkout 的排除范围里，普通 `git add meow`
-          #   会忽略它们（文件不进 index，推上去就是"索引有、包体没有"）。
-          #   只显式加本次两个包，避免把工作树里别的意外改动带进来。
-          git add --sparse fnpack.json "meow/meow_${VER}_x86.fpk" "meow/meow_${VER}_arm.fpk"
+          # ★ 2026-11-27：只提交 fnpack.json。meow 包体不再进本仓库，
+          #   download_url 指向主仓 Release 绝对直链，所以没有 --sparse 的必要。
+          git add fnpack.json
           # 幂等：同版本重跑且产物没变时不留空提交。
           if git diff --cached --quiet; then
             echo "索引与包体无实质变化，跳过提交"

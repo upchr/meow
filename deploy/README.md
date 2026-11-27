@@ -614,7 +614,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 | `tv-plugins-v*` | `tv-node-*` |
 | `plugins-v*` | `plugins` |
 | `docker-v*` | 无（不建 Release） |
-| `fpk-v*` | 不走本脚本；fnOS 包与 FnDepot 索引见 [36 §11.1](../site/docs/dev/docker.md) |
+| `fpk-v*` | 不走本脚本；fnOS 包与 FnDepot 索引见 [构建与发版 §fnOS fpk](../site/docs/dev/build-release.md) |
 
 **只发 TV 不会让 PC 条目消失**——脚本先读线上清单做基线，只覆盖本次涉及的那几条。
 
@@ -661,7 +661,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
   · **两条索引都等 Publish**：`index-after-publish`（`release: published`）从已发布的 Release 里
     `gh release download` 两个 fpk、重算 sha256 后写 FnDepot 与 `fpk-updates`。草稿阶段一条都不写，
     删掉草稿也不会留下用户可见的索引。
-  · FnDepot 是飞牛应用中心正式源（包体自托管）；`fpk-updates` 分支是主仓镜像索引，`download_url` 指向上面那个 Release 的资产，**合并写入**（补发旧版本不会顶掉新版本）。客户端先读 FnDepot，不可达/更旧时读镜像：
+  · FnDepot 是飞牛应用中心正式源（2026-11-27 起**只存索引与图标**，`download_url` 是主仓 Release 绝对直链，包体不再入库）；`fpk-updates` 分支是主仓镜像索引，`download_url` 指向上面那个 Release 的资产，**合并写入**（补发旧版本不会顶掉新版本）。客户端先读 FnDepot，不可达/更旧时读镜像：
   `https://raw.githubusercontent.com/upchr/meow/fpk-updates/fpk.json`
 - **版本线**：壳（`release/tv/pc`）与 fpk tag 必须等于 `client/package.json`；`tv-plugins-v*`（模块）与 `plugins-v*`（插件批次）是独立版本线，tag 后缀只要是数字即可，清单按资产名逐条取版本。
 

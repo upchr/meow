@@ -22,8 +22,8 @@
 - **最新发布**（一般点这个）：<https://github.com/upchr/meow/releases/latest>
 - 全部版本与历史资产：<https://github.com/upchr/meow/releases>
 
-打不开 GitHub 时：飞牛可以改走 [FnDepot 源](/guide/fnos)（源地址有 Gitee 镜像），
-Docker 直接拉镜像；Windows、TV 与 iOS 目前只有 GitHub 一个下载点，换网络或代理再试。
+打不开 GitHub 时：飞牛可以改走 [FnDepot 源](/guide/fnos)（Gitee 镜像只同步到旧版，
+新版本以 GitHub 源为准），Docker 直接拉镜像；Windows、TV 与 iOS 目前只有 GitHub 一个下载点，换网络或代理再试。
 
 ## 资产清单
 

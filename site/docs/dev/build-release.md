@@ -176,9 +176,11 @@ CI 建 draft Release → 人工 Publish → release:published
   整包 19.7MB → 裁后 1.5MB。白名单在 `deploy/scripts/fetch-dex2jar.{sh,ps1}`，另需同步
   `deploy/docker/Dockerfile.apiserver` 与 `build-fpk.sh` 的 jar 数断言；`ci.yml` 有转换冒烟
 - **FnDepot 只保留最近 5 版**（`keep` 输入，2026-11-18 由 3 上调）：客户端只取"大于当前的
-  最大值"，中间版本无功能作用；留的余量是回退兜底。`download_url` 必须保持相对路径
-  （gitee 镜像才带包体）；删文件用 `git update-index --index-info`（blobless 克隆里
-  `git rm` 会读不到对象）
+  最大值"，中间版本无功能作用；留的余量是回退兜底。**2026-11-27 起 meow 包体不再进
+  FnDepot**：`download_url` 写主仓 Release 绝对直链
+  （`https://github.com/upchr/meow/releases/download/release-v<版本>/meow_<版本>_<架构>.fpk`），
+  仓库只存索引与图标，体积恒定 KB 级。官方 V2 协议允许绝对 URL；代价是 gitee 镜像只能
+  镜像索引，包体仍走 GitHub。`toolsplus` 不受此限（包体小，仍在仓库里）。
 
 ## 七、相关
 
