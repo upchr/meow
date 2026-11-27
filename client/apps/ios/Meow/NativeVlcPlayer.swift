@@ -29,6 +29,13 @@ import MobileVLCKit
  */
 final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
 
+    /// 当前正在播放的原生播放器（睡眠定时器到点时直接暂停它）。
+    ///
+    /// <p>为什么需要：PowerTimer 到点只往 `WebViewRegistry.view`（主 WebView）
+    /// 派 JS，而播放器界面其实在**控制层那个独立 WebView** 里 —— JS 打不到控制层，
+    /// 定时到点等于没停（2026-11-27 审计发现）。这里给原生层一个直接入口。
+    static weak var activePlayer: NativeVlcPlayer?
+
     // MARK: - 入参
 
     private let mediaUrl: URL
@@ -131,6 +138,7 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         attachDanmaku()
         startTicking()
         startProgressLoop()
+        Self.activePlayer = self
         /*
          * 回前台补播（2026-11-27 补）：App 挂起时 VLC 的音频输出会被系统停掉，
          * 回前台**不会自己恢复** —— 表现是"切出去再回来画面还在但不动"。
@@ -191,6 +199,17 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         window.meowIos.getBrightness = function(){return window.meowIos.brightness||0};
         window.meowIos.setBrightness = function(v){try{
           window.webkit.messageHandlers.meowVlc.postMessage({op:'brightness',value:Number(v)});
+          return true}catch(e){return false}};
+        /*
+         * 睡眠定时器 / 边缘手势桥（2026-11-27 审计）：播放器的「更多 → 定时」
+         * 调的是 meowIos.powerTimer，控制层没有这份注入 → 设了也没人收，
+         * 定时到点不会暂停（原生播放不像网页那样能自己 setInterval 停）。
+         */
+        window.meowIos.powerTimer = function(sec){try{
+          window.webkit.messageHandlers.meowVlc.postMessage({op:'powerTimer',value:Number(sec)||0});
+          return true}catch(e){return false}};
+        window.meowIos.setNavGesture = function(on){try{
+          window.webkit.messageHandlers.meowVlc.postMessage({op:'navGesture',value:!!on});
           return true}catch(e){return false}};
         /*
          * ★ 关键：网页自己有黑底（html/body/#app），WKWebView 只设 isOpaque=false
@@ -299,8 +318,12 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
             LaunchLog.write("[vlc] seek \(Int(sec))s")
         case "rate":
             let r = (value as? NSNumber)?.floatValue ?? 1
-            // VLCKit 的 rate 只支持有限档位，越界会被忽略；这里夹到 0.5~2
-            player.rate = min(2, max(0.5, r))
+            /*
+             * 网页的倍速档位是 0.5x ~ **3x**（rateOptions），这里必须放行到 3 ——
+             * 原来夹在 2 会让 2.5x/3x 点了没反应（2026-11-27 对齐审计）。
+             * 再往上 VLCKit 的解码/音频会失真，不开放。
+             */
+            player.rate = min(3, max(0.5, r))
         case "open":
             /*
              * 选集/换线：web 层已经拿到新地址，这里只换 media。
@@ -363,15 +386,26 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         case "brightness":
             // 负数 = 还原进页前的亮度
             SystemBrightness.set((value as? NSNumber)?.intValue ?? -1)
+        case "powerTimer":
+            // 睡眠定时：原生计时（JS 切后台会被节流），到点由 PowerTimer 直接暂停本播放器
+            PowerTimer.start(seconds: (value as? NSNumber)?.intValue ?? 0)
+        case "navGesture":
+            // 控制层是全屏播放页：关掉 WebView 的横滑前进后退，避免和横滑 seek 抢手势
+            controlWebView?.allowsBackForwardNavigationGestures =
+                (value as? NSNumber)?.boolValue ?? false
         case "dm":
             // 弹幕开关（弹幕由本层 VlcDanmakuOverlay 渲染，web 只发指令）
             danmaku.setEnabled((value as? NSNumber)?.boolValue ?? true)
         case "dmUrl":
             /*
-             * 换集后的新弹幕地址（2026-11-27）。原生只拿得到拉起那一刻的
-             * danmakuUrl —— 不换的话，切到第 2 集还在放第 1 集的弹幕。
+             * 换集 / 换源 / 30 秒自动重试都会推这个地址（2026-11-27）。
+             * 同地址也接受一次：网页重试用的是同一个 URL，而那时说明上一次
+             * 拉取失败（danmakuXml 为空）；已成功装载过的重复推送直接跳过。
              */
-            if let s = value as? String, !s.isEmpty, s != (danmakuUrl ?? "") { loadDanmaku(s) }
+            if let s = value as? String, !s.isEmpty,
+               (s != (danmakuUrl ?? "") || danmakuXml == nil) {
+                loadDanmaku(s)
+            }
         case "dmOptions":
             /*
              * 弹幕设置（透明度/字号/速度/区域/屏蔽词/校准）。
@@ -452,6 +486,15 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         guard didStart, !didFinish, !userPaused, !player.isPlaying else { return }
         LaunchLog.write("[vlc] resume after background")
         player.play()
+    }
+
+    /// 睡眠定时到点：暂停原生播放（PowerTimer 的 JS 那条路打不到控制层 WebView）
+    func pauseFromPowerTimer() {
+        guard !didFinish else { return }
+        userPaused = true
+        player.pause()
+        AudioSession.setPlaying(false)
+        LaunchLog.write("[vlc] paused by power timer")
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -1034,6 +1077,7 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
     private func finish(ended: Bool) {
         guard !didFinish else { return }
         didFinish = true
+        if Self.activePlayer === self { Self.activePlayer = nil }
         tickTimer?.invalidate()
         tickTimer = nil
         hideControlsWork?.cancel()

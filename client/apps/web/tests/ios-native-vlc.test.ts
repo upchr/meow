@@ -24,6 +24,7 @@ const read = (...p: string[]) => readFileSync(join(...p), 'utf8')
 const PROJECT = read(IOS, 'project.yml')
 const PREPARE = read(IOS, 'scripts', 'prepare-vlckit.sh')
 const PLAYER = read(IOS, 'Meow', 'NativeVlcPlayer.swift')
+const POWER = read(IOS, 'Meow', 'PowerTimer.swift')
 const DANMAKU = read(IOS, 'Meow', 'VlcDanmakuOverlay.swift')
 const WEBVIEW = read(IOS, 'Meow', 'WebView.swift')
 const BOOTSTRAP = read(IOS, 'Meow', 'Bootstrap.swift')
@@ -441,5 +442,23 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(PLAYER).toContain('WKNavigationDelegate')
     expect(PLAYER).toContain('webViewWebContentProcessDidTerminate')
     expect(PLAYER).toContain('webView.reload()')
+  })
+
+  it('倍速上限与网页一致（3x）；弹幕重试/手选源也要同步给原生', () => {
+    // 网页 rateOptions 到 3x，原生夹在 2 会让 2.5/3x 点了没反应
+    expect(PLAYER).toContain('player.rate = min(3, max(0.5, r))')
+    // 30 秒重试用同一个 URL、手选源走 dmOverrideUrl：都得从 loadDanmaku 推
+    expect(LAYER).toContain("if (iosNative && url) iosNativeCmd('dmUrl', url)")
+    expect(PLAYER).toContain('|| danmakuXml == nil')
+  })
+
+  it('睡眠定时在原生播放时也能停（控制层补 powerTimer 桥 + 直接暂停）', () => {
+    // 控制层是独立 WebView：不补 powerTimer 的话「更多 → 定时」设了没人收
+    expect(PLAYER).toContain("op:'powerTimer'")
+    expect(PLAYER).toContain('PowerTimer.start(seconds:')
+    // 到点只往主 WebView 派 JS 打不到控制层 → PowerTimer 直接暂停原生播放器
+    expect(POWER).toContain('NativeVlcPlayer.activePlayer?.pauseFromPowerTimer()')
+    expect(PLAYER).toContain('func pauseFromPowerTimer()')
+    expect(LAYER).toContain("iosNativeCmd('pause')")
   })
 })

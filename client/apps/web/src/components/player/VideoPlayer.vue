@@ -410,6 +410,12 @@ function firePowerLocally(action: PowerAction) {
 
 /** TV 原生定时器到点回推（Java 侧的 evalJs 调这两个全局函数） */
 function onPowerFire(action: string) {
+  // 端内原生渲染：声音/画面都在 VLC 里，`<video>.pause()` 停不了它
+  if (iosNative) {
+    iosNativeCmd('pause')
+    flashMarks(action === 'pause' ? '定时到，已暂停播放' : '定时到')
+    return
+  }
   const v = video.value
   if (v && !v.paused) v.pause()
   flashMarks(action === 'pause' ? '定时到，已暂停播放' : '定时到')
@@ -6312,6 +6318,15 @@ async function loadDanmaku(
   url: string,
   opts: { fresh?: boolean; serverOnly?: boolean; pick?: boolean } = {},
 ) {
+  /*
+   * 端内原生渲染：**每一次**真正发生的弹幕加载都要同步给原生（2026-11-27）。
+   *
+   * 之前只在 props.danmakuUrl 变化时推，漏了两条同样会换源的路径：
+   *   ① 30 秒自动重试（同 URL 重跑一次，上一次失败时原生那边还是空的）；
+   *   ② 面板手选弹幕源（走 dmOverrideUrl，不改 props）。
+   * 同 URL 是否重拉由原生侧判断（danmakuXml 为空才重拉），不会重复请求。
+   */
+  if (iosNative && url) iosNativeCmd('dmUrl', url)
   const fresh = opts.fresh === true
   /**
    * 只看后端（跳过 IndexedDB 读，网络请求**不带** fresh）。

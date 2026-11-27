@@ -28,6 +28,12 @@ enum PowerTimer {
             WebViewRegistry.view?.evaluateJavaScript(
                 "window.__meowPowerFire&&window.__meowPowerFire('pause')",
                 completionHandler: nil)
+            /*
+             * 端内原生播放：播放器界面在**控制层那个独立 WebView** 里，
+             * 上面那行 JS 只打到主 WebView，定时到点等于没停。这里直接
+             * 暂停原生播放器（2026-11-27 审计发现）。
+             */
+            NativeVlcPlayer.activePlayer?.pauseFromPowerTimer()
             // 暂停后把后台音频也放掉：否则锁屏上还显示"正在播放"
             AudioSession.stopForSleep()
             cancel()
