@@ -41,7 +41,7 @@ import { detectCodecCaps } from '@/utils/codecCaps'
 import { transcodeBadge, transcodeMediaInfo, type MediaSourceInfo } from '@/utils/mediaInfo'
 import { fmtSeekClock, transcodeRestartStart } from '@/utils/transcodeSeek'
 import type { MediaProbeResult } from '@/api/library'
-import { embedPlay, hasEmbedPlayer, hasIosNativePlayer, hasNativePlayer, isIosNativeLayer, iosNativeCmd, nativeCodecCaps, onIosNativeClosed, openIosNative, openNative } from '@/api/nativeBridge'
+import { embedPlay, hasEmbedPlayer, hasIosNativePlayer, hasNativePlayer, isIosNativeLayer, iosNativeOpen, nativeCodecCaps, onIosNativeClosed, openIosNative, openNative } from '@/api/nativeBridge'
 import { meowDiagnose } from '@/ai/tools'
 import { explainDiagnosis } from '@/ai/llm'
 import { CAUSE_LABEL, type Diagnosis } from '@/ai/diagnose'
@@ -896,6 +896,22 @@ async function load() {
   // 直接构造一个只有 url 的 PlayResult 交给播放器（它有 hls.js + 原生两条路）。
   if (isLibraryPlay.value) {
     /*
+     * 端内原生渲染层（2026-11-27）：这里跑在透明控制层 WebView 里，画面由
+     * VLCKit 出 —— **不要再做"这个内核能不能播"的判断**。
+     *
+     * 真机实报"选集/换线路点了没反应"的根因就在这：.mkv 会先命中下面的
+     * 「容器不支持 → 转码」分支，而转码预检在 iOS 上必然失败（没有 ffmpeg），
+     * `play.value` 永远不会被赋值 → 监听 `play.url` 的原生换片逻辑收不到地址。
+     * 原生模式只要把地址交出去：换片由 watch(play.url) → iosNativeOpen()
+     * 完成，同地址重复投递由原生侧吞掉（不会把进度打回 0）。
+     */
+    if (iosNativeLayer.value) {
+      play.value = { url: libraryDirect.value } as PlayResult
+      loading.value = false
+      loadingText.value = ''
+      return
+    }
+    /*
      * F5（2026-11-17）：不吃 MKV/AVI 等容器的内核（Safari 全平台、桌面
      * Chrome/Edge）直连必然失败，却要先白等播放器 25 秒 watchdog 才进转码兜底。
      * 带 lib+file 坐标的片库播放直接走转码；不带（外部拼的直链）只能试直连。
@@ -1099,7 +1115,10 @@ function switchEpisode(i: number) {
   // 换集时播放器不再卸载（见 src 的注释），旧视频不会自己停。
   // 先暂停：加载新地址的 0.4–2 秒里不能继续出声/继续走时间
   // （进度写入已由 progressArmed 挡住，但声音挡不住）。
-  player.value?.pause()
+  //
+  // 端内原生渲染例外：声音在 VLC 那边，pause() 打不到它；让旧片继续放到
+  // 新地址到达、由原生 open 直接换片，比先黑屏等地址更连续。
+  if (!iosNativeLayer.value) player.value?.pause()
   /*
    * ★ 换集要清掉"这一集试过的线路"（2026-10-31 修"偶现无法播放"）。
    *
@@ -1503,7 +1522,8 @@ watch(
   (u) => {
     if (!iosNativeLayer.value || !u) return
     if (u.includes('/api/transcode')) return
-    iosNativeCmd('open', absoluteApi(u))
+    // 带上这一集的 header（换线路时防盗链头可能和上一条不同）
+    iosNativeOpen(absoluteApi(u), play.value?.header)
   },
 )
 
@@ -1512,6 +1532,15 @@ function reopenNative() {
   nativeExited.value = false
   nativeJustClosed = false
   if (!tryIosNative()) showSilentHint('端内播放器没拉起来（地址或桥异常）')
+}
+
+/** "已退出"面板的「下一集」：关掉面板，按普通切集路径走（会再拉起原生） */
+function nativePlayNext() {
+  const i = currentIndex.value
+  if (i < 0 || i >= playlist.value.length - 1) return
+  nativeExited.value = false
+  nativeJustClosed = false
+  switchEpisode(i + 1)
 }
 
 function tryIosNative(): boolean {
@@ -1556,72 +1585,17 @@ function tryIosNative(): boolean {
   return ok
 }
 
-/**
- * 原生控制层里的「选集」（2026-11-27）。
+/*
+ * 选集 / 换线路在原生控制层里**不另写一套**（2026-11-27 修正）。
  *
- * <p>为什么不回父页面处理：父页面在原生播放器底下、被盖住，回传还要再开一次
- * 原生 —— 直接在本层 fetchPlay 最省一跳。`currentIndex` 是 computed（按 epName
- * 反查），所以这里只改 epName，切片高亮会自动跟手。
- */
-async function nativeSelectEpisode(i: number) {
-  const ep = playlist.value[i]
-  if (!ep?.url) return
-  const epUrl = ep.url
-  try {
-    const r = await fetchPlay(site, flag.value, epUrl)
-    const u = typeof r?.url === 'string' ? r.url : ''
-    if (!u || !/^https?:/i.test(u) || String(r?.parse ?? '') === '1') {
-      // 需要解析器 / 非 http：这一集只能回网页播（原生拿不到解析后的地址）
-      showSilentHint('这一集需要网页播放，已切回网页')
-      iosNativeCmd('close')
-      return
-    }
-    epName.value = ep.name
-    play.value = { url: u, header: r.header } as PlayResult
-    iosNativeCmd('open', u)
-  } catch (e) {
-    showSilentHint(`取这一集失败：${e instanceof Error ? e.message : String(e)}`)
-  }
-}
-
-/**
- * 原生控制层里的「换线路」：同一集在新线路里取地址，再让原生换片。
+ * <p>上一版在这里放了 nativeSelectEpisode/nativeSelectLine 两个"本层取地址再
+ * 直接发 open"的函数，但模板从没调用过（白写）；而真正在用的路径是
+ * switchEpisode/switchLine → router.replace → 路由 watcher → load()。
  *
- * <p>线路数很少（2~5 条），失败就停在原线路，不动 play.value。
+ * <p>现在统一走那条既有路径：load() 在 iosNativeLayer 下有"只解析地址"的
+ * 快速分支，地址落地后由 `watch(play.url) → iosNativeOpen()` 换片。
+ * 好处是路由/进度/集名高亮只有一个真源，不会出现"面板里换了、历史还记着旧集"。
  */
-async function nativeSelectLine(name: string) {
-  const line = lines.value.find((l) => l.name === name)
-  if (!line?.episodes.length) return
-  const idx = Math.min(Math.max(0, currentIndex.value), line.episodes.length - 1)
-  const ep = line.episodes[idx]
-  if (!ep?.url) return
-  try {
-    const r = await fetchPlay(site, name, ep.url)
-    const u = typeof r?.url === 'string' ? r.url : ''
-    if (!u || !/^https?:/i.test(u) || String(r?.parse ?? '') === '1') {
-      showSilentHint('这条线路需要网页播放，已切回网页')
-      iosNativeCmd('close')
-      return
-    }
-    flag.value = name
-    epName.value = ep.name
-    play.value = { url: u, header: r.header } as PlayResult
-    iosNativeCmd('open', u)
-  } catch (e) {
-    showSilentHint(`换线路失败：${e instanceof Error ? e.message : String(e)}`)
-  }
-}
-
-/** 原生控制层的上一集 / 下一集（越界时不动，按钮本身会置灰） */
-function nativePrevEpisode() {
-  if (currentIndex.value > 0) void nativeSelectEpisode(currentIndex.value - 1)
-}
-
-function nativeNextEpisode() {
-  if (currentIndex.value < playlist.value.length - 1) {
-    void nativeSelectEpisode(currentIndex.value + 1)
-  }
-}
 
 /**
  * 让后端把这个源现转成 HLS（H.264）。
@@ -3014,6 +2988,26 @@ onMounted(() => {
       return
     }
     /*
+     * 播完了：按连播设置直接进下一集（2026-11-27）。
+     *
+     * 原生页结束时已经把播放器 dismiss 了，父页面是可见的；这里如果不接手，
+     * 用户看到的就是"一集播完停在已退出面板"。倒计时分支在父页面里画不出来
+     * （倒计时浮层挂在 VideoPlayer 的 #overlay 里，而父页面没挂播放器），
+     * 所以在原生链路里 countdown/immediate 一律按"立即下一集"处理。
+     */
+    if (
+      r.ended &&
+      prefs.autoNextMode !== 'off' &&
+      currentIndex.value >= 0 &&
+      currentIndex.value + 1 < playlist.value.length
+    ) {
+      // 这次是"要继续播"：不能让 nativeJustClosed 把重新拉起原生的那次吞掉
+      nativeJustClosed = false
+      nativeExited.value = false
+      switchEpisode(currentIndex.value + 1)
+      return
+    }
+    /*
      * 回到 web 后必须把上一轮的错误/遮罩清干净：不清的话父页面停在
      * 「本端没有转码能力」那张错误页上（黑底 + 文字），用户看到的就是黑屏。
      */
@@ -3914,7 +3908,8 @@ function switchLine(name: string, opts: { auto?: boolean } = {}) {
   const ep = line ? sameEpisodeIn(line) : null
   if (!line || !ep) return
   // 与换集同因：播放器保持挂载，换线期间必须先把旧视频停下来。
-  player.value?.pause()
+  // 端内原生渲染例外（声音在 VLC 那边，pause() 打不到它），交给 open 换片。
+  if (!iosNativeLayer.value) player.value?.pause()
   if (!opts.auto) {
     // 手动换线路：用户主动选择，清掉自动换源的失败记录重新计
     try {
@@ -4522,6 +4517,43 @@ onBeforeUnmount(() => {
         </div>
       </template>
     </VideoPlayer>
+
+    <!--
+      端内原生播放器已退出（2026-11-27）。
+      父页面此时没有 src、也没有 error —— 不画这块会落到"纯黑屏、没有任何入口"
+      （真机实报：从原生返回后只能强退）。三个出口：继续用原生（同一集）、
+      下一集、返回上一页。
+    -->
+    <div
+      v-if="nativeExited"
+      class="absolute inset-0 z-[140] grid place-items-center bg-black/85 px-6"
+    >
+      <div class="max-w-sm text-center">
+        <p class="text-sm text-ink-2">已退出端内播放器</p>
+        <p class="mt-1.5 text-xs text-ink-3">原生解码页已关闭，可以从这里继续。</p>
+        <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+          <button
+            class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent transition hover:bg-accent-dim"
+            @click="reopenNative"
+          >
+            继续用端内播放器
+          </button>
+          <button
+            v-if="currentIndex >= 0 && currentIndex < playlist.length - 1"
+            class="rounded-md bg-white/12 px-4 py-2 text-sm text-ink-2 transition hover:bg-white/20"
+            @click="nativePlayNext"
+          >
+            下一集
+          </button>
+          <button
+            class="rounded-md bg-white/8 px-4 py-2 text-sm text-ink-2 transition hover:bg-white/14"
+            @click="router.back()"
+          >
+            返回
+          </button>
+        </div>
+      </div>
+    </div>
 
 
     <!-- 离线播放：明确告诉用户"这不是源站，是本机缓存"，否则会误以为在线的 -->

@@ -33,9 +33,9 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
 
     private let mediaUrl: URL
     private let titleText: String
-    private let headers: [String: String]
+    private var headers: [String: String]
     private let startPositionMs: Int
-    private let danmakuUrl: String?
+    private var danmakuUrl: String?
     private let meta: [String: Any]
     /// 进度回传给谁（弱引用：webview 可能先被销毁）
     private weak var hostWebView: WKWebView?
@@ -99,6 +99,7 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         self.hostWebView = host
         self.controlURL = controlURL
         self.controlApiBase = apiBase
+        self.currentMediaUrl = url.absoluteString
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .fullScreen
     }
@@ -109,6 +110,20 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         super.viewDidLoad()
         view.backgroundColor = .black
         buildVideoLayer()
+        /*
+         * 点屏切换控制条。★ 手势必须挂在 **view** 上，不能挂在 controls 上：
+         * controls 一旦 isHidden，它自己的手势跟着失效，用户就再也呼不出控制条
+         * —— 2026-11-27 真机实报「返回/状态栏都呼不出，只能强退」。
+         * cancelsTouchesInView=false 让按钮、进度条、控制层网页照常收到触摸。
+         *
+         * <p>web 控制层模式同样需要它：控制栏隐藏时整个 WKWebView 会被收起来
+         * （`bar=0`，省合成），这时只有这条手势能把用户的一拳转成"放出
+         * WebView + 让网页亮出控制栏"（`toggleControls` 里有 isHidden 守卫，
+         * WebView 可见时它是空操作，不会跟网页自己的点屏逻辑打架）。
+         */
+        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
+        tap.cancelsTouchesInView = false
+        view.addGestureRecognizer(tap)
         /*
          * 控制层二选一（2026-11-27）：
          *   有 controlURL → 透明 WKWebView 加载播放页 native 模式（图一同一套 UI）
@@ -283,8 +298,28 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
             // VLCKit 的 rate 只支持有限档位，越界会被忽略；这里夹到 0.5~2
             player.rate = min(2, max(0.5, r))
         case "open":
-            // 选集/换线：web 层已经拿到新地址，这里只换 media
-            guard let s = value as? String, let u = URL(string: s) else { return }
+            /*
+             * 选集/换线：web 层已经拿到新地址，这里只换 media。
+             *
+             * <p>value 两种形态：
+             *   String            —— 只换地址（旧协议，header 沿用上一次）
+             *   {url, headers}    —— 连 header 一起换（换线路时防盗链头可能不同）
+             */
+            var target = ""
+            if let s = value as? String {
+                target = s
+            } else if let d = value as? [String: Any] {
+                target = (d["url"] as? String) ?? ""
+                if let raw = d["headers"] as? String {
+                    headers = Self.parseHeaders(raw)
+                }
+            }
+            guard let u = URL(string: target) else { return }
+            /*
+             * 同一地址不重开（2026-11-27）：控制层刚加载时会把自己的初始地址
+             * 也推一遍，重开会把正在看的进度打回 0。
+             */
+            if target == currentMediaUrl { return }
             openNewMedia(u)
         case "close":
             finish(ended: false)
@@ -318,6 +353,33 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         case "dm":
             // 弹幕开关（弹幕由本层 VlcDanmakuOverlay 渲染，web 只发指令）
             danmaku.setEnabled((value as? NSNumber)?.boolValue ?? true)
+        case "dmUrl":
+            /*
+             * 换集后的新弹幕地址（2026-11-27）。原生只拿得到拉起那一刻的
+             * danmakuUrl —— 不换的话，切到第 2 集还在放第 1 集的弹幕。
+             */
+            if let s = value as? String, !s.isEmpty, s != (danmakuUrl ?? "") { loadDanmaku(s) }
+        case "dmOptions":
+            /*
+             * 弹幕设置（透明度/字号/速度/区域/屏蔽词/校准）。
+             * 控制层调一次面板就发一次，原生这边立即重排 —— 只读启动时的
+             * metaJson 会导致"进了原生页后面板怎么调都没反应"。
+             */
+            if let d = value as? [String: Any] { applyDanmakuOptions(d) }
+        case "mute":
+            /*
+             * 静音/取消。VLCKit 的 audio 对象在各小版本里可用性不一致，
+             * 而系统音量这条路已经有现成实现且真机验证过（滑块就走它）。
+             * 只记"静音前的音量"用于还原；拖动滑块写入的 0 不会被抢回。
+             */
+            let on = (value as? NSNumber)?.boolValue ?? false
+            if on {
+                let curVol = SystemVolume.current()
+                if curVol > 0 { lastUnmutedVolume = curVol }
+                SystemVolume.set(0)
+            } else if SystemVolume.current() == 0, lastUnmutedVolume > 0 {
+                SystemVolume.set(lastUnmutedVolume)
+            }
         case "nav":
             // 搜索/设置这类跳转：先关原生，再让父页面路由过去
             pendingNav = value as? String ?? ""
@@ -330,6 +392,7 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
     /// 换片（选集/换线）：保留播放器实例，只换 media（避免整页重建）
     private func openNewMedia(_ u: URL) {
         LaunchLog.write("[vlc] open \(u.absoluteString.prefix(160))")
+        currentMediaUrl = u.absoluteString
         pendingSeekMs = 0
         userPaused = false
         didFinish = false
@@ -338,6 +401,12 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         startedAt = Date()
         errorLabel?.removeFromSuperview()
         errorLabel = nil
+        /*
+         * 换片先把弹幕清空：新一集的 danmakuUrl 随后由控制层用 `dmUrl` 推来，
+         * 清空期间不能还飞着上一集的弹幕（真机上一眼就能看出来）。
+         */
+        danmakuXml = nil
+        danmaku.setItems([])
         let media = VLCMedia(url: u)
         if let ua = headers["User-Agent"], !ua.isEmpty {
             media.addOption(":http-user-agent=\(ua)")
@@ -397,6 +466,8 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
 
         danmaku.frame = view.bounds
         danmaku.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // 弹幕层只负责画：不能吃掉点屏手势（控制层隐藏时靠它唤回控制栏）
+        danmaku.isUserInteractionEnabled = false
         view.addSubview(danmaku)
     }
 
@@ -405,15 +476,7 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         controls.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(controls)
 
-        /*
-         * 点屏切换控制条。★ 手势必须挂在 **view** 上，不能挂在 controls 上：
-         * controls 一旦 isHidden，它自己的手势跟着失效，用户就再也呼不出控制条
-         * —— 2026-11-27 真机实报「返回/状态栏都呼不出，只能强退」。
-         * cancelsTouchesInView=false 让按钮、进度条照常收到触摸。
-         */
-        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
-        tap.cancelsTouchesInView = false
-        view.addGestureRecognizer(tap)
+        // 点屏手势已在 viewDidLoad 统一挂到 view 上（两种控制层模式共用）
 
         // 顶部：返回 + 标题
         topBar.translatesAutoresizingMaskIntoConstraints = false
@@ -542,6 +605,18 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
     }
 
     private var pendingSeekMs = 0
+    /// 弹幕原始 XML：控制层改「校准/屏蔽词」时要按新参数重解析（只留解析结果就改不了）
+    private var danmakuXml: String?
+    /// 重解析代数号：滑块连续触发时只让最后一包结果落地
+    private var danmakuParseGeneration = 0
+    /// 拉取代数号：换集很快时丢弃晚到的上一集弹幕
+    private var danmakuRequestGeneration = 0
+    /// 最新的网页弹幕设置（dmOptions 覆盖 metaJson.dm，换集重拉时不能丢）
+    private var currentDmOptions: [String: Any] = [:]
+    /// 静音前的系统音量：mute op 用它还原（拖音量条时留给滑块值，不抢）
+    private var lastUnmutedVolume = 0
+    /// 当前媒体地址：`open` 收到同一地址时不重开（重开会把进度打回 0）
+    private var currentMediaUrl = ""
 
     private func applyPendingSeekIfNeeded() {
         guard pendingSeekMs > 0 else { return }
@@ -555,22 +630,91 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
     // MARK: - 弹幕
 
     private func attachDanmaku() {
-        guard let raw = danmakuUrl, !raw.isEmpty, let url = URL(string: raw) else { return }
-        let dm = (meta["dm"] as? [String: Any]) ?? [:]
-        // NSNumber → CGFloat 必须显式转：CGFloat 与 Float 在 Swift 里不互通
+        guard let raw = danmakuUrl, !raw.isEmpty else { return }
+        loadDanmaku(raw)
+    }
+
+    /// 拉取并装载一集弹幕。换集时控制层会把新的 danmakuUrl 发过来。
+    private func loadDanmaku(_ raw: String) {
+        guard let url = URL(string: raw) else { return }
+        danmakuUrl = raw
+        danmakuXml = nil
+        // 换集瞬间先清屏：新弹幕回来前不能还飞着上一集的
+        danmaku.setItems([])
+        applyVisualOptions(dmOptions())
+        danmakuRequestGeneration += 1
+        let gen = danmakuRequestGeneration
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, err in
+            guard let self, let data, err == nil,
+                  let xml = String(data: data, encoding: .utf8) else { return }
+            /*
+             * 解析用**回来的这一刻**的设置：加载途中用户可能已经改过面板
+             * （dmOptions 先到、XML 后到），用请求发起时的快照会丢改动。
+             */
+            let dm = self.dmOptions()
+            let items = Self.parseDanmaku(xml, dm: dm)
+            LaunchLog.write("[vlc] danmaku \(items.count) items")
+            DispatchQueue.main.async {
+                // 换集很快时，晚到的上一集响应不能覆盖当前集
+                guard gen == self.danmakuRequestGeneration else { return }
+                self.danmakuXml = xml
+                self.applyVisualOptions(dm)
+                self.danmaku.setItems(items)
+            }
+        }.resume()
+    }
+
+    /// 只应用「看起来怎么样」的四项（透明度/字号/速度/区域）
+    private func applyVisualOptions(_ dm: [String: Any]) {
         danmaku.applyOptions(
             opacity: CGFloat((dm["opacity"] as? NSNumber)?.doubleValue ?? 0.9),
             scale: CGFloat((dm["scale"] as? NSNumber)?.doubleValue ?? 1.0),
             durationSec: (dm["duration"] as? NSNumber)?.intValue ?? 12,
             areaRatio: CGFloat((dm["area"] as? NSNumber)?.doubleValue ?? 0.7))
-        let offsetMs = ((meta["dmOffset"] as? NSNumber)?.doubleValue ?? 0) * 1000
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, err in
-            guard let self, let data, err == nil,
-                  let xml = String(data: data, encoding: .utf8) else { return }
-            let items = VlcDanmakuOverlay.parse(xml: xml, offsetMs: Int(offsetMs))
-            LaunchLog.write("[vlc] danmaku \(items.count) items")
-            DispatchQueue.main.async { self.danmaku.setItems(items) }
-        }.resume()
+    }
+
+    /// 网页下发的弹幕设置块（metaJson.dm + 后续 dmOptions 覆盖）。没有就全部走默认值
+    private func dmOptions() -> [String: Any] {
+        if !currentDmOptions.isEmpty { return currentDmOptions }
+        return (meta["dm"] as? [String: Any]) ?? [:]
+    }
+
+    /// 控制层改了弹幕设置（透明度/字号/速度/区域/屏蔽词/校准）→ 立即生效。
+    ///
+    /// <p>旧实现只在拉起原生那一刻读一次 meta，用户进了原生页再调面板就怎么调都没反应
+    /// （2026-11-27 真机实报"弹幕挤、没办法对齐播放页的显示区域设置"）。
+    /// 屏蔽词与校准只能在解析期应用，所以留着原始 XML 按新参数重解析。
+    private func applyDanmakuOptions(_ d: [String: Any]) {
+        // 记下来：换集时 loadDanmaku 要用**最新**设置，否则会把用户刚调好的
+        // 透明度/字号/区域回退成拉起那一刻的 meta 值。
+        currentDmOptions = d
+        applyVisualOptions(d)
+        guard let xml = danmakuXml else { return }
+        /*
+         * 重解析放后台：一集弹幕的 XML 常有 1~3MB，主线程正则要几十毫秒，
+         * 正好卡在用户拖滑块的每一次 input 上（真机手感就是"调不动"）。
+         * 代数号丢掉过期结果：滑块连续触发时只认最后一包。
+         */
+        danmakuParseGeneration += 1
+        let gen = danmakuParseGeneration
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let items = Self.parseDanmaku(xml, dm: d)
+            DispatchQueue.main.async {
+                guard let self, gen == self.danmakuParseGeneration else { return }
+                LaunchLog.write("[vlc] danmaku re-apply \(items.count) items")
+                self.danmaku.setItems(items)
+            }
+        }
+    }
+
+    private static func parseDanmaku(_ xml: String, dm: [String: Any]) -> [VlcDanmakuOverlay.Item] {
+        // 网页的 offset 单位是**秒**（dmOffset.ts 的 setDmOffset(sec)），这里换毫秒
+        let offsetMs = Int(((dm["offset"] as? NSNumber)?.doubleValue ?? 0) * 1000)
+        let raw = dm["block"] as? String ?? ""
+        let words = raw.split(whereSeparator: {
+            $0 == "," || $0 == "，" || $0.isWhitespace
+        }).map { String($0) }.filter { !$0.isEmpty }
+        return VlcDanmakuOverlay.parse(xml: xml, offsetMs: offsetMs, blockWords: words)
     }
 
     // MARK: - 轮询
@@ -604,7 +748,15 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         }
         timeLabel.text = "\(Self.clock(cur)) / \(Self.clock(total))"
         playButton.setTitle(player.isPlaying ? "❚❚" : "▶︎", for: .normal)
-        danmaku.tick(positionMs: Int(cur))
+        /*
+         * 弹幕：先按视频实际显示区域（aspect-fit 后的 rect）裁剪画布 —— 否则
+         * 16:9 片源在更宽的屏上会把弹幕放到左右黑边上（2026-11-27 真机实报
+         * "没法对齐播放页的显示区域"）。位置由 overlay 自己的 displayLink 插值，
+         * 这里只推校准锚点 + 播放状态 + 倍速。
+         */
+        danmaku.setViewport(videoRect())
+        danmaku.tick(positionMs: Int(cur), playing: player.isPlaying,
+                     rate: Double(player.rate))
         /*
          * 状态推送降频（2026-11-27 真机实报「弹幕很卡顿」）：
          * evaluateJavaScript 是主线程工作，4Hz 一直跑会和弹幕合成抢 CPU。
@@ -813,16 +965,7 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
             LaunchLog.write("[vlc] bad url: \(dict["url"] ?? "nil")")
             return false
         }
-        var headers: [String: String] = [:]
-        let headerRaw = dict["headers"] as? String ?? ""
-        // 桥上的编码是 `k=v&k=v`（值 percent-encoded），与 TV 的 encodeHeaders 同构
-        for pair in headerRaw.split(separator: "&") {
-            let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard kv.count == 2 else { continue }
-            let k = String(kv[0]).removingPercentEncoding ?? String(kv[0])
-            let v = String(kv[1]).removingPercentEncoding ?? String(kv[1])
-            if !k.isEmpty { headers[k] = v }
-        }
+        let headers = Self.parseHeaders(dict["headers"] as? String ?? "")
         var meta: [String: Any] = [:]
         if let rawMeta = dict["metaJson"] as? String, !rawMeta.isEmpty,
            let data = rawMeta.data(using: .utf8),
@@ -850,6 +993,22 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler {
         ShellOrientation.apply("landscape")
         host.present(vc, animated: true)
         return true
+    }
+
+    /**
+     * 桥上的 header 编码是 `k=v&k=v`（值 percent-encoded），与 TV 的
+     * encodeHeaders 同构。`present` 与换片 `open` 共用这一份。
+     */
+    private static func parseHeaders(_ headerRaw: String) -> [String: String] {
+        var headers: [String: String] = [:]
+        for pair in headerRaw.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard kv.count == 2 else { continue }
+            let k = String(kv[0]).removingPercentEncoding ?? String(kv[0])
+            let v = String(kv[1]).removingPercentEncoding ?? String(kv[1])
+            if !k.isEmpty { headers[k] = v }
+        }
+        return headers
     }
 
     /**

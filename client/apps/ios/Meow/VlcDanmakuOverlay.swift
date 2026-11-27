@@ -1,17 +1,20 @@
+import QuartzCore
 import UIKit
 
 /**
  * 轻量弹幕层（CALayer/UILabel 自绘，零依赖）——iOS 版对应 TV 的 `DanmakuOverlay`。
  *
- * <p>为什么不让 web 那边画：原生播放器全屏接管时 WKWebView 不可见，
- * 弹幕只能由原生层渲染。参数与语义**逐项对齐** TV 的实现，避免两个端
- * 出现"同样一条弹幕，一个端 12 秒一个端 8 秒"。
+ * <p>为什么不让 web 那边画：原生播放器全屏接管时弹幕只能由原生层渲染；
+ * 控制层那个透明 WKWebView 上的 canvas 会和 VLC 画面抢合成（真机实测掉帧）。
+ * 参数与语义**逐项对齐** TV 的实现，避免两端"同一条弹幕一个 12 秒一个 8 秒"。
  *
  * <p>与播放器的关系：只读播放位置，不控制播放。位置跳变 > 2.5 秒视为 seek，
  * 清空在场弹幕重新开始，避免"拖完进度弹幕一次性糊满屏"。
  *
- * <p>平滑方式：播放器每 0.25 秒给一次位置，本层把每条弹幕的位移做成
- * 0.26 秒线性动画 —— 比每帧重算省 CPU，视觉上足够顺（弹幕只有横向平移）。
+ * <p><b>平滑方式（2026-11-27 重写）</b>：播放器仍每 0.25 秒推一次位置，但那只是
+ * **校准锚点**；真正的位移由本层自己的 `CADisplayLink` 以 60fps 按「锚点 + 单调时钟
+ * 增量」插值算出。旧实现把每条弹幕做成 0.26 秒 `UIView.animate`，一帧要重建几十个
+ * 动画、还要带 layer shadow，真机表现就是"一顿一顿"。
  */
 final class VlcDanmakuOverlay: UIView {
 
@@ -32,9 +35,12 @@ final class VlcDanmakuOverlay: UIView {
     private struct Active {
         let item: Item
         let label: UILabel
+        /// 滚动弹幕的车道号；静态弹幕是所在行号
         let lane: Int
         let bornPosMs: Int
         let width: CGFloat
+        let height: CGFloat
+        /// 容器坐标下的顶边
         let y: CGFloat
         let scroll: Bool
     }
@@ -46,11 +52,15 @@ final class VlcDanmakuOverlay: UIView {
     /// 开关（控制层"弹"按钮）。关着时不发射，但仍记录位置
     private var enabled = true
 
-    // 可被网页设置覆盖（metaJson.dm）
+    // 可被网页设置覆盖（metaJson.dm / dmOptions 指令）
     private var opacity: CGFloat = 0.9
     private var scale: CGFloat = 1
     private var scrollMs: Int = 12_000
     private var areaRatio: CGFloat = 0.7
+
+    // 视频实际显示区域（aspect-fit 后的 rect，overlay 坐标）。nil = 退回全屏
+    private var videoRect: CGRect?
+    private var viewport: CGRect { videoRect ?? bounds }
 
     // 按当前尺寸算出的行布局
     private var textSize: CGFloat = 32
@@ -58,8 +68,20 @@ final class VlcDanmakuOverlay: UIView {
     private var lanes: Int = 8
     private var topRows: Int = 2
     private var bottomRows: Int = 2
-    private var layoutW: CGFloat = 0
+    private var font: UIFont = .boldSystemFont(ofSize: 32)
+    private var layoutSig = ""
     private var laneLastAt: [Int] = Array(repeating: -99_999, count: 64)
+
+    // 60fps 时钟：锚点（播放器时间）+ 单调时钟增量，播放器 tick 只做校准
+    private var clockMs: Double = 0
+    private var clockAt: CFTimeInterval = 0
+    private var clockValid = false
+    private var playing = false
+    private var rate: Double = 1
+    private var link: CADisplayLink?
+
+    // UILabel 池：密集段每秒新建几十个 UILabel 会顶到主线程预算
+    private var pool: [UILabel] = []
 
     // MARK: - 配置
 
@@ -68,15 +90,30 @@ final class VlcDanmakuOverlay: UIView {
         self.scale = min(2, max(0.5, scale))
         self.scrollMs = min(30, max(4, durationSec)) * 1000
         self.areaRatio = min(1, max(0.2, areaRatio))
-        layoutIfNeeded()
-        recomputeLayout()
+        recomputeMetrics()
+    }
+
+    /// 视频显示区域（aspect-fit 后的 rect）。弹幕只在画面内飞，不飘黑边。
+    func setViewport(_ rect: CGRect) {
+        let r = (rect.width > 1 && rect.height > 1) ? rect : nil
+        if let a = videoRect, let b = r,
+           abs(a.minX - b.minX) < 0.5, abs(a.minY - b.minY) < 0.5,
+           abs(a.width - b.width) < 0.5, abs(a.height - b.height) < 0.5 { return }
+        if videoRect == nil && r == nil { return }
+        videoRect = r
+        recomputeMetrics()
     }
 
     /// 弹幕开关（控制层"弹"按钮）：关掉时清屏且不再发射
     func setEnabled(_ on: Bool) {
         guard enabled != on else { return }
         enabled = on
-        if !on { clearActive() }
+        if !on {
+            clearActive()
+            stopLink()
+        } else if playing {
+            startLink()
+        }
     }
 
     func setItems(_ list: [Item]) {
@@ -84,46 +121,166 @@ final class VlcDanmakuOverlay: UIView {
         cursor = 0
         clearActive()
         lastPosMs = -1
+        clockValid = false
+        if enabled && playing { startLink() }
     }
 
     // MARK: - 布局
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        recomputeLayout()
+        // 没被 setViewport 钉住时跟着容器走（旋转/安全区变化）
+        if videoRect == nil { recomputeMetrics() }
     }
 
-    private func recomputeLayout() {
-        let h = bounds.height
-        let w = bounds.width
-        guard h > 0, w > 0 else { return }
-        if abs(w - layoutW) < 1 { return }
-        layoutW = w
+    /// CADisplayLink 会强引用 target：不摘掉的话本层永远不 deinit（经典循环引用），
+    /// 播放器关掉后还在后台空转。离开窗口即停。
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { stopLink() }
+    }
+
+    deinit {
+        link?.invalidate()
+    }
+
+    private func recomputeMetrics() {
+        let h = viewport.height
+        let w = viewport.width
+        guard h > 1, w > 1 else { return }
+        /*
+         * 尺寸/参数签名：没变就什么都不做（layoutSubviews 会被频繁调用，
+         * 每次都 clearActive 会让在场弹幕不间断地被抹掉）。
+         */
+        let sig = "\(Int(w))x\(Int(h))|\(scale)|\(areaRatio)|\(scrollMs)"
+        guard sig != layoutSig else { return }
+        layoutSig = sig
         textSize = min(56, max(18, h / 32 * scale))
         laneH = textSize * 1.5
         lanes = max(3, Int(h * areaRatio / laneH))
-        topRows = 2
-        bottomRows = 2
+        /*
+         * 顶/底静态各占 2 行（区域小则 1 行）。滚动弹幕只在中间走，
+         * 不分开的话密集时静态弹幕会压在滚动弹幕上（TV 2026-11-20 真机截图可见）。
+         */
+        topRows = lanes >= 8 ? 2 : (lanes >= 5 ? 1 : 0)
+        bottomRows = topRows
+        if lanes - topRows - bottomRows < 2 {
+            topRows = 0
+            bottomRows = 0
+        }
+        font = .boldSystemFont(ofSize: textSize)
         // 尺寸变了，按新行数重排（清掉重来，比错位好）
         clearActive()
     }
 
     // MARK: - 位置驱动
 
-    /// 播放器每 0.25 秒调一次；pos 不前进（暂停）时自然冻结。
-    func tick(positionMs pos: Int) {
-        guard layoutW > 0 else { return }
-        if !enabled {
-            // 关着也要记位置：重新打开时不该把这段时间当成 seek 而清屏重发
+    /**
+     * 播放器每 0.25 秒调一次（校准锚点）。
+     *
+     * <p>`playing=false` 时冻结在 pos 上：暂停画面不动，弹幕也不动。
+     */
+    func tick(positionMs pos: Int, playing: Bool, rate: Double) {
+        let now = CACurrentMediaTime()
+        self.rate = min(4, max(0.1, rate))
+        guard enabled else {
+            lastPosMs = pos
+            self.playing = false
+            stopLink()
+            return
+        }
+        guard !layoutSig.isEmpty else {
+            // 还没拿到尺寸：先记位置，等布局好了会从当前位置重新对齐
             lastPosMs = pos
             return
         }
-        if lastPosMs >= 0 && abs(pos - lastPosMs) > Self.SEEK_JUMP_MS {
-            clearActive()
+        let seeked = lastPosMs >= 0 && abs(pos - lastPosMs) > Self.SEEK_JUMP_MS
+        if seeked || !clockValid {
+            clockMs = Double(pos)
+            clockAt = now
+            clockValid = true
+            if seeked {
+                clearActive()
+                // 往回拖时游标必须回到目标时间点，否则要等播过旧位置才有弹幕
+                resyncCursor(pos)
+            }
+        } else if self.playing != playing {
+            // 播放/暂停切换：以播放器时间为准重新锚定，避免暂停期间时钟继续跑
+            clockMs = Double(pos)
+            clockAt = now
+        } else if playing {
+            /*
+             * 缓慢校准：播放器时间与插值时钟的差值按 30% 收敛，而不是直接赋值。
+             * 直接赋值 = 每 250ms 把弹幕瞬移一次，视觉上就是"一顿一顿"。
+             */
+            let predicted = clockMs + (now - clockAt) * 1000 * self.rate
+            let drift = Double(pos) - predicted
+            if abs(drift) > 400 {
+                clockMs = Double(pos)
+                clockAt = now
+            } else {
+                clockMs = predicted + drift * 0.3
+                clockAt = now
+            }
+        } else {
+            clockMs = Double(pos)
+            clockAt = now
         }
         lastPosMs = pos
+        self.playing = playing
+        if playing {
+            startLink()
+        } else {
+            stopLink()
+            renderOnce()
+        }
+    }
+
+    private func startLink() {
+        guard link == nil, window != nil else { return }
+        let l = CADisplayLink(target: self, selector: #selector(step))
+        l.add(to: .main, forMode: .common)
+        link = l
+    }
+
+    private func stopLink() {
+        link?.invalidate()
+        link = nil
+    }
+
+    private func currentPosMs(_ now: CFTimeInterval) -> Int {
+        let extra = playing ? (now - clockAt) * 1000 * rate : 0
+        return Int(clockMs + extra)
+    }
+
+    private func renderOnce() {
+        guard clockValid else { return }
+        let pos = Int(clockMs)
+        cleanup(pos)
         spawnIfDue(pos)
-        layoutActive(pos)
+        layout(pos)
+    }
+
+    @objc private func step() {
+        guard clockValid, enabled else { return }
+        let pos = currentPosMs(CACurrentMediaTime())
+        // 先清过期、再发射、最后落位：过期的不占车道，密集段才不会被迫叠字
+        cleanup(pos)
+        spawnIfDue(pos)
+        layout(pos)
+    }
+
+    // MARK: - 发射
+
+    private func resyncCursor(_ pos: Int) {
+        let edge = pos - Self.SPAWN_WINDOW_MS
+        var lo = 0
+        var hi = items.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if items[mid].timeMs < edge { lo = mid + 1 } else { hi = mid }
+        }
+        cursor = lo
     }
 
     private func spawnIfDue(_ pos: Int) {
@@ -137,119 +294,146 @@ final class VlcDanmakuOverlay: UIView {
     }
 
     private func spawn(_ item: Item, _ pos: Int) {
-        if active.count >= Self.MAX_ACTIVE {
-            if let oldest = active.min(by: { $0.bornPosMs < $1.bornPosMs }) {
-                oldest.label.removeFromSuperview()
-                active.removeAll { $0.label === oldest.label }
+        guard active.count < Self.MAX_ACTIVE else { return }
+        let scroll = item.mode == 1 || item.mode == 2 || item.mode == 3
+        let lane: Int
+        let y: CGFloat
+        if scroll {
+            lane = scrollLane(pos)
+            // 轨道满：丢弃，不叠字（TV 同一判据："宁可少，不叠"）
+            guard lane >= 0 else { return }
+            y = viewport.minY + CGFloat(lane) * laneH
+        } else {
+            lane = staticRow(item.mode)
+            guard lane >= 0 else { return }
+            if item.mode == 5 {
+                y = viewport.minY + CGFloat(lane) * laneH
+            } else {
+                y = viewport.maxY - CGFloat(lane + 1) * laneH
             }
         }
-        let scroll = item.mode == 1 || item.mode == 2 || item.mode == 3
-        let label = UILabel()
-        label.text = item.text
-        label.font = .boldSystemFont(ofSize: textSize)
-        label.textColor = item.color.withAlphaComponent(opacity)
-        // 描边：亮画面上纯色字会糊，TV 那边是 outline+fill 双绘，这里用阴影近似
-        label.layer.shadowColor = UIColor.black.withAlphaComponent(opacity * 0.85).cgColor
-        label.layer.shadowRadius = 1
-        label.layer.shadowOffset = .zero
-        label.layer.shadowOpacity = 1
-        label.sizeToFit()
 
-        let y: CGFloat
-        let lane: Int
-        if scroll {
-            // 滚动弹幕只在中间区域（避开顶部/底部静态占位）
-            let first = topRows
-            let last = max(first, lanes - bottomRows - 1)
-            lane = pickLane(from: first, to: last, pos: pos, scroll: true)
-            y = CGFloat(lane) * laneH
-        } else if item.mode == 5 {
-            lane = pickLane(from: 0, to: topRows - 1, pos: pos, scroll: false)
-            y = CGFloat(lane) * laneH
-        } else {
-            lane = pickLane(from: max(0, lanes - bottomRows), to: lanes - 1, pos: pos, scroll: false)
-            y = CGFloat(lane) * laneH
-        }
-        label.frame.origin = CGPoint(x: bounds.width, y: y)
+        let label = dequeueLabel()
+        /*
+         * 描边用 NSAttributedString 的 strokeWidth，不用 layer shadow：
+         * shadow 每帧都要离屏合成，几十条弹幕同时飞时是主要掉帧源
+         * （2026-11-27 真机实报"一顿一顿"）。负值 = 描边 + 填充。
+         */
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: item.color.withAlphaComponent(opacity),
+            .strokeColor: UIColor.black.withAlphaComponent(opacity * 0.85),
+            .strokeWidth: -6.0,
+        ]
+        label.attributedText = NSAttributedString(string: item.text, attributes: attrs)
+        label.alpha = 1
+        let fit = label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                            height: CGFloat.greatestFiniteMagnitude))
+        let w = fit.width.rounded(.up) + 2
+        let h = max(laneH, fit.height.rounded(.up))
+        label.frame = CGRect(x: viewport.maxX, y: y, width: w, height: h)
         addSubview(label)
         active.append(Active(item: item, label: label, lane: lane,
-                             bornPosMs: pos, width: label.bounds.width,
-                             y: y, scroll: scroll))
+                             bornPosMs: pos, width: w, height: h, y: y, scroll: scroll))
     }
 
-    /// 某车道是否可用：最后一条弹幕的右边缘已完全进入屏幕（留 8pt 间隙）。
-    private func laneClear(_ lane: Int, at pos: Int) -> Bool {
-        guard let last = active.last(where: { $0.lane == lane }) else { return true }
-        if !last.scroll { return pos - last.bornPosMs > Self.STATIC_MS }
-        let elapsed = max(0, pos - last.bornPosMs)
+    /// 滚动车道是否可用：该道所有在场弹幕的右边缘都已进入画面并留 40pt 余量。
+    private func scrollLane(_ pos: Int) -> Int {
+        let from = max(0, topRows)
+        let to = max(from + 1, lanes - bottomRows)
+        guard viewport.width > 1 else { return -1 }
+        for lane in from..<to where lane < laneLastAt.count {
+            // 同车道两次投放的最小间隔：防止密集段两条弹幕贴在一起
+            if pos - laneLastAt[lane] < Self.LANE_GAP_MS { continue }
+            var right: CGFloat = -1_000_000
+            for a in active where a.scroll && a.lane == lane {
+                let x = currentX(a, at: pos)
+                right = max(right, x + a.width)
+            }
+            if right < viewport.maxX - 40 {
+                laneLastAt[lane] = pos
+                return lane
+            }
+        }
+        return -1
+    }
+
+    /// 顶/底静态位：取**第一个空行**（不是"按在场条数排队"——上排过期后
+    /// 按条数算会把新弹幕放进下排，正好压住还在显示的那条）。
+    private func staticRow(_ mode: Int) -> Int {
+        let maxRows = max(1, mode == 5 ? topRows : bottomRows)
+        var used = Set<Int>()
+        for a in active where !a.scroll && a.item.mode == mode { used.insert(a.lane) }
+        for row in 0..<maxRows where !used.contains(row) { return row }
+        return -1
+    }
+
+    private func currentX(_ a: Active, at pos: Int) -> CGFloat {
+        let elapsed = max(0, pos - a.bornPosMs)
         let progress = min(1.0, CGFloat(elapsed) / CGFloat(scrollMs))
-        let x = bounds.width - (bounds.width + last.width) * progress
-        return x + last.width < bounds.width - 8
+        return viewport.maxX - (viewport.width + a.width) * progress
     }
 
-    /// 找一条最近没投放过的车道；全忙则取最久没用的（宁可略挤也不丢弹幕）。
-    private func pickLane(from: Int, to: Int, pos: Int, scroll: Bool) -> Int {
-        let lo = max(0, min(from, lanes - 1))
-        let hi = max(lo, min(to, lanes - 1))
-        /*
-         * 选道判据（2026-11-27 真机实报「弹幕挤在一起」）：
-         * 只看"350ms 没用过"不够 —— 滚动弹幕 12 秒才走完一条道，快车道上前
-         * 一条还没走远，第二条按时间间隔放进来就会追尾重叠。
-         * 必须同时检查：该车道最后一条的**右边缘**是否已经完全进入屏幕。
-         */
-        for lane in lo...hi where pos - laneLastAt[lane] >= Self.LANE_GAP_MS {
-            if scroll && !laneClear(lane, at: pos) { continue }
-            laneLastAt[lane] = pos
-            return lane
-        }
-        var best = lo
-        var oldest = Int.max
-        for lane in lo...hi where laneLastAt[lane] < oldest {
-            oldest = laneLastAt[lane]
-            best = lane
-        }
-        laneLastAt[best] = pos
-        return best
-    }
+    // MARK: - 渲染
 
-    private func layoutActive(_ pos: Int) {
-        let w = bounds.width
+    private func layout(_ pos: Int) {
+        guard !active.isEmpty else { return }
+        // 逐帧写 layer.position：禁用隐式动画，否则每次赋值都会重新起一段动画
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         for a in active {
-            let target: CGPoint
+            let x: CGFloat
             if a.scroll {
-                // 关键状态：按「生成位置 → 当前位置」的增量算，暂停/seek 都自动正确
-                let elapsed = max(0, pos - a.bornPosMs)
-                let progress = min(1.0, CGFloat(elapsed) / CGFloat(scrollMs))
-                target = CGPoint(x: w - (w + a.width) * progress, y: a.y)
+                x = currentX(a, at: pos)
             } else {
-                // 静态弹幕：居中，4 秒后消失
-                target = CGPoint(x: (w - a.width) / 2, y: a.y)
+                x = viewport.minX + (viewport.width - a.width) / 2
+                // 静态弹幕末尾 400ms 淡出（位置冻结，只改透明度）
                 let age = pos - a.bornPosMs
                 a.label.alpha = age > Self.STATIC_MS
-                    ? 0 : min(1, CGFloat(Self.STATIC_MS - age) / 400) * opacity
+                    ? 0 : min(1, CGFloat(Self.STATIC_MS - age) / 400)
             }
-            UIView.animate(withDuration: 0.26, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
-                a.label.frame.origin = target
-            }
+            a.label.layer.position = CGPoint(x: x + a.width / 2, y: a.y + a.height / 2)
         }
-        // 已经滚出屏幕的移出（滚动结束 = 位置过 1 或 4 秒静态到期）
-        let dead = active.filter { a in
+        CATransaction.commit()
+    }
+
+    private func cleanup(_ pos: Int) {
+        guard !active.isEmpty else { return }
+        var keep: [Active] = []
+        keep.reserveCapacity(active.count)
+        for a in active {
             let age = pos - a.bornPosMs
-            return a.scroll ? age > scrollMs + 300 : age > Self.STATIC_MS + 300
+            let dead = a.scroll ? age > scrollMs + 300 : age > Self.STATIC_MS + 300
+            if dead {
+                recycle(a.label)
+            } else {
+                keep.append(a)
+            }
         }
-        for a in dead {
-            a.label.removeFromSuperview()
-        }
-        if !dead.isEmpty {
-            let ids = Set(dead.map { ObjectIdentifier($0.label) })
-            active.removeAll { ids.contains(ObjectIdentifier($0.label)) }
-        }
+        active = keep
     }
 
     private func clearActive() {
-        for a in active { a.label.removeFromSuperview() }
+        for a in active { recycle(a.label) }
         active.removeAll()
         laneLastAt = Array(repeating: -99_999, count: 64)
+    }
+
+    // MARK: - Label 池
+
+    private func dequeueLabel() -> UILabel {
+        if let l = pool.popLast() { return l }
+        let l = UILabel()
+        l.isUserInteractionEnabled = false
+        l.numberOfLines = 1
+        l.lineBreakMode = .byClipping
+        return l
+    }
+
+    private func recycle(_ l: UILabel) {
+        l.removeFromSuperview()
+        l.alpha = 1
+        if pool.count < 96 { pool.append(l) }
     }
 
     // MARK: - 解析
@@ -258,9 +442,10 @@ final class VlcDanmakuOverlay: UIView {
      * 解析 B 站风格的弹幕 XML：`<d p="time,mode,size,color,...">text</d>`。
      *
      * <p>与 TV 的 `parseDanmaku` 同一套判据：p 的第 1 段是**秒**（可能带小数），
-     * 第 2 段是模式，第 4 段是十进制 RGB。offsetMs 是弹幕时间轴校正（用户可配）。
+     * 第 2 段是模式，第 4 段是十进制 RGB。offsetMs 是弹幕时间轴校正（用户可配），
+     * blockWords 是屏蔽词（命中即丢弃，逗号/空白分隔，与 TV 一致）。
      */
-    static func parse(xml: String, offsetMs: Int) -> [Item] {
+    static func parse(xml: String, offsetMs: Int, blockWords: [String] = []) -> [Item] {
         var out: [Item] = []
         guard let re = try? NSRegularExpression(
             pattern: "<d p=\"([^\"]*)\"[^>]*>(.*?)</d>",
@@ -277,10 +462,17 @@ final class VlcDanmakuOverlay: UIView {
             let seconds = Double(parts[0]) ?? 0
             let mode = Int(parts[1]) ?? 1
             let color = Int(parts[3]) ?? 0xFFFFFF
+            let decoded = decodeEntities(text)
+            guard !decoded.isEmpty else { continue }
+            var blocked = false
+            for w in blockWords where !w.isEmpty {
+                if decoded.contains(w) { blocked = true; break }
+            }
+            if blocked { continue }
             let timeMs = Int(seconds * 1000) + offsetMs
-            guard timeMs >= 0, !text.isEmpty else { continue }
+            guard timeMs >= 0 else { continue }
             out.append(Item(timeMs: timeMs,
-                            text: decodeEntities(text),
+                            text: decoded,
                             mode: mode,
                             color: Self.color(fromDecimal: color)))
         }

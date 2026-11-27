@@ -2925,6 +2925,35 @@ const anyPanelOpen = computed(
     showHelp.value,
 )
 
+/**
+ * 端内原生渲染：控制层 WebView 可以整个收起来了吗（2026-11-27）。
+ *
+ * <p>透明 WKWebView 一直叠在 VLC 画面之上，合成器和主线程都要为它留预算；
+ * 收走后弹幕/画面回到纯原生渲染（真机上是"一顿一顿"的关键一环）。
+ *
+ * <p>★ 判据宁可保守：只有**这一个 WebView 上确实没有任何可交互/要显示的
+ * 东西**时才收 —— 锁屏解锁按钮、跳过片头/片尾、任何面板都在 webview 里，
+ * 收早了用户就再也点不到（锁定态尤其致命：点屏由原生转发回来，但
+ * `wake()` 在 locked 下直接 return，解锁按钮永远回不来）。
+ */
+const nativeLayerIdle = computed(
+  () =>
+    !showCtrl.value &&
+    !locked.value &&
+    !anyPanelOpen.value &&
+    !inIntro.value &&
+    !inOutro.value &&
+    !!iosNative,
+)
+
+if (iosNative) {
+  watch(
+    nativeLayerIdle,
+    (idle) => iosNativeCmd('bar', idle ? 0 : 1),
+    { immediate: true },
+  )
+}
+
 const canLock = computed(
   () =>
     isTouch.value &&
@@ -4171,6 +4200,13 @@ function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
   }
   muted.value = p === 0
   if (sys) setSystemVolume(p)
+  /*
+   * 端内原生渲染：`<video>` 不加载播放，唯一能出声的是原生 VLC —— 静音必须
+   * 走原生（系统音量）。滑块拖到 0 等同静音，拖回来要解除静音。
+   * 不同步这一包的话，原生侧会停在上一次的静音标记上（2026-11-27 真机实报
+   * "静音按了没反应、拉音量才有用"）。
+   */
+  if (iosNative) iosNativeCmd('mute', p === 0 ? 1 : 0)
   if (opts.save !== false) {
     // 高频项：静默落盘，不广播事件（否则会刷屏 WebDAV 同步）
     savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
@@ -4184,6 +4220,18 @@ function onVolumeInput(e: Event) {
 }
 
 function toggleMute() {
+  /*
+   * 端内原生渲染（2026-11-27 真机实报"静音按钮无效"）：
+   * 这里没有在播的 <video>，改 `v.muted` 等于改一个不存在的元素。
+   * 静音交给原生（系统音量置 0 / 还原），本地只维护 UI 状态与偏好；
+   * **不动 volume.value**，否则"取消静音"就找不回原来的音量。
+   */
+  if (iosNative) {
+    muted.value = !muted.value
+    iosNativeCmd('mute', muted.value ? 1 : 0)
+    savePrefs({ muted: muted.value, volume: volume.value }, { silent: true })
+    return
+  }
   const v = video.value
   if (!v) return
   if (v.muted || v.volume === 0) {
@@ -6111,6 +6159,54 @@ function clearDmOffset() {
 }
 
 /**
+ * 把弹幕设置推给原生 overlay（端内原生渲染模式，2026-11-27）。
+ *
+ * <p>原生画弹幕时，透明度/字号/速度/区域/屏蔽词/校准全都只存在 web 侧；
+ * 原生只拿得到拉起那一刻的 metaJson。不实时推的话，用户在原生页里打开
+ * 「弹幕设置」怎么调都没反应（真机实报：弹幕挤、显示区域对不上）。
+ */
+function pushDmOptionsToNative() {
+  if (!iosNative) return
+  const p = prefs.value
+  iosNativeCmd('dmOptions', {
+    opacity: p.danmakuOpacity,
+    scale: p.danmakuScale,
+    duration: p.danmakuDuration,
+    area: p.danmakuArea,
+    block: props.dmBlockWords || '',
+    offset: dmOffset.value,
+  })
+}
+
+if (iosNative) {
+  // 面板改设置会替换 prefs 对象；屏蔽词/校准走各自的 ref。任一变化都推一次
+  watch(
+    () => {
+      const p = prefs.value
+      return [
+        p.danmakuOpacity,
+        p.danmakuScale,
+        p.danmakuDuration,
+        p.danmakuArea,
+        props.dmBlockWords || '',
+        dmOffset.value,
+      ].join('|')
+    },
+    () => pushDmOptionsToNative(),
+  )
+  /*
+   * 换集后的弹幕地址（2026-11-27）：原生只拿到拉起那一刻的 danmakuUrl，
+   * 不推的话切到第 2 集还在放第 1 集的弹幕。空值不发（弹幕还在解析/没有）。
+   */
+  watch(
+    () => props.danmakuUrl,
+    (u) => {
+      if (u) iosNativeCmd('dmUrl', u)
+    },
+  )
+}
+
+/**
  * 弹幕屏蔽。
  *
  * <p>三条规则：屏蔽词命中、纯符号刷屏、同屏重复（同一条文本在极短时间内
@@ -6615,6 +6711,23 @@ onMounted(() => {
       if (rate.value !== 1) iosNativeCmd('rate', rate.value)
     }, 200)
     /*
+     * 进控制层就把当前弹幕设置与静音状态同步给原生（2026-11-27）。
+     * 原生只拿得到拉起那一刻的 metaJson；此后一切以这里推送为准。
+     */
+    pushDmOptionsToNative()
+    if (props.danmakuUrl) iosNativeCmd('dmUrl', props.danmakuUrl)
+    // 播放器偏好里弹幕是关的：原生 overlay 默认开着，必须显式同步一次
+    if (!dmOn.value) iosNativeCmd('dm', 0)
+    if (muted.value) iosNativeCmd('mute', 1)
+    /*
+     * 控制栏隐藏期间原生会把整个 WebView 收起来（bar=0）；点屏唤回时由
+     * NativeVlcPlayer 调这个钩子。没有它的话，WebView 虽然被原生放出来了，
+     * 但页面自己的 showCtrl 还是 false —— 屏幕上一片空白，用户以为卡死。
+     */
+    ;(window as unknown as { __meowVlcShowBar?: () => void }).__meowVlcShowBar = () => {
+      wake()
+    }
+    /*
      * 把「视频所在容器链」的背景清成透明（2026-11-27 真机实报「只有声音、
      * 没画面也没弹幕」）。
      *
@@ -7072,6 +7185,8 @@ watch(prefs, (p) => {
   })
   dmOn.value = p.danmaku
   dm.value?.setEnabled(p.danmaku)
+  // 端内原生渲染：开关也要给原生（否则设置页改了开关，原生层照旧显示）
+  if (iosNative) iosNativeCmd('dm', p.danmaku ? 1 : 0)
 }, { deep: true })
 
 onBeforeUnmount(() => {
@@ -7191,6 +7306,10 @@ onBeforeUnmount(() => {
     if (w.__meowIosActive === iosActiveBridge) w.__meowIosActive = undefined
   }
   window.removeEventListener('meow:webview-resume', onWebviewResume)
+  if (iosNative) {
+    // 卸载时摘掉原生点屏回调：否则原生再调它就会碰到已销毁的组件状态
+    delete (window as unknown as { __meowVlcShowBar?: () => void }).__meowVlcShowBar
+  }
   const w = window as unknown as { __meowPauseMedia?: () => void }
   if (w.__meowPauseMedia === pauseMediaOnHide) w.__meowPauseMedia = undefined
   // 所有一次性定时器都要清：组件销毁后它们仍会触发 ref 写入

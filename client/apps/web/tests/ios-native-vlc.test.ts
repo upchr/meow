@@ -202,6 +202,9 @@ describe('透明 WebView 控制层', () => {
     expect(BRIDGE).toContain('export function isIosNativeLayer()')
     expect(BRIDGE).toContain('export function readIosNativeState()')
     expect(BRIDGE).toContain('export function iosNativeCmd(')
+    // 换片要走带 header 的封装（换线路时防盗链头可能不同）
+    expect(BRIDGE).toContain('export function iosNativeOpen(')
+    expect(BRIDGE).toContain("iosNativeCmd('open', { url, headers: encodeHeaders(header) })")
   })
 
   it('web 侧：控制层组件复用弹幕引擎与解析器（不另写一套）', () => {
@@ -234,10 +237,22 @@ describe('透明 WebView 控制层', () => {
     expect(PLAY).toContain('if (iosNativeLayer.value) return false')
   })
 
-  it('PlayView：选集/换线路在本层取地址后让原生换片', () => {
-    expect(PLAY).toContain('async function nativeSelectEpisode(')
-    expect(PLAY).toContain('async function nativeSelectLine(')
-    expect(PLAY).toContain("iosNativeCmd('open', u)")
+  it('PlayView：native 层的选集/换线走既有路由链路，load() 只交地址', () => {
+    /*
+     * 2026-11-27 真机实报「选集/换线路点了没反应」：.mkv 在原生层里仍会命中
+     * 「容器不支持 → 转码」分支，而 iOS 的转码预检必然失败，play.value 永远
+     * 不被赋值 → watch(play.url) 收不到新地址。原生层必须跳过能力判断。
+     */
+    const at = PLAY.indexOf('if (isLibraryPlay.value) {')
+    const body = PLAY.slice(at, at + 1600)
+    expect(body).toContain('if (iosNativeLayer.value) {')
+    expect(body).toContain('play.value = { url: libraryDirect.value } as PlayResult')
+    // 换片仍然由监听 play.url 的那一处统一发 open（带这一集的 header）
+    expect(PLAY).toContain('iosNativeOpen(absoluteApi(u), play.value?.header)')
+    expect(PLAY).toContain('if (!iosNativeLayer.value || !u) return')
+    // 原生侧两种 value 形态都收：纯 URL（老协议）与 {url, headers}
+    expect(PLAYER).toContain('if let d = value as? [String: Any] {')
+    expect(PLAYER).toContain('private static func parseHeaders(')
   })
 })
 
@@ -281,5 +296,87 @@ describe('控制层：透明与状态恢复', () => {
     expect(LAYER).toContain("iosNativeCmd('rate'")
     // 弹幕由原生画，web 引擎强制关
     expect(LAYER).toContain('dm.value.setEnabled(iosNative ? false : dmOn.value)')
+  })
+})
+
+/**
+ * 控制层第三轮真机修复（2026-11-27）：
+ * ① 集数切换无效（native 层 load 仍走"容器不支持→转码"，play.value 永不落地）
+ * ② 静音按钮无效（原生渲染时 <video> 不存在，改 muted 等于改了个寂寞）
+ * ③ 弹幕挤（车道满时强行叠字；也不跟播放页的「显示区域」设置走）
+ * ④ 弹幕一顿一顿（4Hz UIView.animate + layer shadow + WebView 常驻合成）
+ */
+describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
+  it('切集：原生层 load() 跳过容器/转码判定，直接把地址交给原生', () => {
+    const at = PLAY.indexOf('if (isLibraryPlay.value) {')
+    const body = PLAY.slice(at, at + 1600)
+    expect(body).toContain('if (iosNativeLayer.value) {')
+    expect(body).toContain('play.value = { url: libraryDirect.value } as PlayResult')
+    // 同一地址不重开（控制层初次加载会把自己的初始地址推一遍，重开会回到 0）
+    expect(PLAYER).toContain('if target == currentMediaUrl { return }')
+  })
+
+  it('静音：原生渲染走 mute 指令，且不动 volume.value（取消静音要能还原）', () => {
+    expect(LAYER).toContain("iosNativeCmd('mute', muted.value ? 1 : 0)")
+    expect(LAYER).toContain("iosNativeCmd('mute', p === 0 ? 1 : 0)")
+    expect(PLAYER).toContain('case "mute":')
+    expect(PLAYER).toContain('lastUnmutedVolume')
+  })
+
+  it('弹幕设置：变更实时推给原生（透明度/字号/速度/区域/屏蔽词/校准）', () => {
+    expect(BRIDGE).toContain("| 'dmOptions'")
+    expect(PLAYER).toContain('case "dmOptions":')
+    expect(LAYER).toContain('function pushDmOptionsToNative()')
+    expect(LAYER).toContain("block: props.dmBlockWords || ''")
+    expect(LAYER).toContain('offset: dmOffset.value')
+    // 校准单位：网页是秒，原生换毫秒（与 TV 同口径）
+    expect(PLAYER).toContain('(dm["offset"] as? NSNumber)?.doubleValue ?? 0) * 1000')
+  })
+
+  it('弹幕：换集要换弹幕源（否则第 2 集还在飞第 1 集的弹幕）', () => {
+    expect(BRIDGE).toContain("| 'dmUrl'")
+    expect(PLAYER).toContain('case "dmUrl":')
+    expect(LAYER).toContain("iosNativeCmd('dmUrl', u)")
+  })
+
+  it('弹幕：车道满就丢弃，不强行叠字（TV 同一判据"宁可少，不叠"）', () => {
+    expect(DANMAKU).toContain('private func scrollLane(')
+    expect(DANMAKU).toContain('return -1')
+    expect(DANMAKU).toContain('guard lane >= 0 else { return }')
+    // 静态位同样按行数排队，满了丢
+    expect(DANMAKU).toContain('private func staticRow(')
+  })
+
+  it('弹幕：60fps 插值（displayLink），不再 4Hz UIView.animate + shadow', () => {
+    expect(DANMAKU).toContain('CADisplayLink')
+    expect(DANMAKU).toContain('CACurrentMediaTime()')
+    expect(DANMAKU).toContain('CATransaction.setDisableActions(true)')
+    expect(DANMAKU).not.toContain('UIView.animate(withDuration: 0.26')
+    expect(DANMAKU).not.toContain('label.layer.shadow')
+    // 播放器只推校准锚点 + 播放状态 + 倍速
+    expect(PLAYER).toContain('danmaku.tick(positionMs: Int(cur), playing: player.isPlaying')
+  })
+
+  it('弹幕：按视频实际显示区域裁剪（不飘黑边，区域设置才真的生效）', () => {
+    expect(DANMAKU).toContain('func setViewport(')
+    expect(DANMAKU).toContain('private var viewport: CGRect')
+    expect(PLAYER).toContain('danmaku.setViewport(videoRect())')
+  })
+
+  it('控制层收起省合成：锁定/面板/跳过片头时不能收（否则用户点不到）', () => {
+    expect(LAYER).toContain('const nativeLayerIdle = computed(')
+    expect(LAYER).toContain("iosNativeCmd('bar', idle ? 0 : 1)")
+    expect(LAYER).toContain('!locked.value')
+    expect(LAYER).toContain('!anyPanelOpen.value')
+    expect(LAYER).toContain('!inIntro.value')
+    // 收起后点屏能唤回：原生放出 WebView 并调网页钩子（手势必须挂在 view 上）
+    expect(PLAYER).toContain('__meowVlcShowBar')
+    expect(PLAYER).toContain('tap.cancelsTouchesInView = false')
+    expect(LAYER).toContain('__meowVlcShowBar')
+  })
+
+  it('原生退出后不再黑屏：给出继续 / 下一集 / 返回三个出口', () => {
+    expect(PLAY).toContain('v-if="nativeExited"')
+    expect(PLAY).toContain('function nativePlayNext()')
   })
 })

@@ -521,6 +521,15 @@ export type IosNativeOp =
   | 'bar'
   /** 弹幕开关（弹幕由原生 VlcDanmakuOverlay 画） */
   | 'dm'
+  /** 换集后的新弹幕地址（原生只拿得到拉起那一刻的 danmakuUrl） */
+  | 'dmUrl'
+  /**
+   * 弹幕设置（透明度/字号/速度/区域/屏蔽词/校准）。value 是一个对象，
+   * 原生按新参数立即重排 —— 只发开关的话，进了原生页再调面板不生效。
+   */
+  | 'dmOptions'
+  /** 静音/取消静音（原生渲染时 `<video>` 不存在，只能让原生改系统音量） */
+  | 'mute'
   /** 关原生后让父页面跳到该路由（搜索/设置） */
   | 'nav'
   /** 换地址继续原生播（选集/换线用，value 是第二参） */
@@ -532,7 +541,10 @@ export type IosNativeOp =
  *
  * <p>postMessage 单向，返回 true 只代表消息已投递。
  */
-export function iosNativeCmd(op: IosNativeOp, value?: number | string): boolean {
+export function iosNativeCmd(
+  op: IosNativeOp,
+  value?: number | string | Record<string, unknown>,
+): boolean {
   try {
     const b = (window as unknown as {
       meowIos?: { nativeCmd?: (op: string, value: unknown) => boolean }
@@ -542,6 +554,17 @@ export function iosNativeCmd(op: IosNativeOp, value?: number | string): boolean 
   } catch {
     return false
   }
+}
+
+/**
+ * 让原生换片（选集 / 换线路）。
+ *
+ * <p>与裸 `iosNativeCmd('open', url)` 的区别：把**这一集**的 header 一起带过去。
+ * 换线路时防盗链头可能和上一条不同，只换 URL 会 403（真机上表现为"换线路后
+ * 一直黑屏"）。原生侧对同一 URL 会忽略（不把进度打回 0）。
+ */
+export function iosNativeOpen(url: string, header?: unknown): boolean {
+  return iosNativeCmd('open', { url, headers: encodeHeaders(header) })
 }
 
 // ---------------------------------------------------------------- 系统睡眠
