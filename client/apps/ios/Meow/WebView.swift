@@ -110,10 +110,28 @@ struct WebView: UIViewRepresentable {
                     case "powerTimer":
                         // 倒计时（原生计时：JS 切后台会被挂起）
                         PowerTimer.start(seconds: (dict["value"] as? NSNumber)?.intValue ?? 0)
+                    case "apiBackend":
+                        /*
+                         * 后端地址（2026-11-27 真机修正）：落 UserDefaults 之后
+                         * **必须由壳重建注入脚本再 reload**。页面自己 reload 只会
+                         * 重跑启动时注册的旧脚本，注入的 apiBase 还是旧值 ——
+                         * 表现就是「地址刚填上又刷回 127.0.0.1:9978」。
+                         * 非法协议（非 http(s)）不重载，保持当前后端不动。
+                         */
+                        if BackendOverride.set(dict["value"] as? String ?? "") {
+                            Task { @MainActor in Bootstrap.reloadWebWithCurrentBackend() }
+                        }
                     case "notify":
                         Notifier.shared.notify(
                             title: dict["title"] as? String ?? "喵播放器",
                             body: dict["body"] as? String ?? "")
+                    case "nativeVlc":
+                        /*
+                         * 原生兜底播放（MKV/AVI/FLV/DTS 等 web 播不了的格式）。
+                         * 与 TV 的 openNative 同构：web 侧只在 hasIosNativePlayer()
+                         * 为 true 时走这里，失败由原生回传 __meowVlcClosed 让 web 恢复。
+                         */
+                        NativeVlcPlayer.present(from: message.webView, dict: dict)
                     default:
                         break
                     }

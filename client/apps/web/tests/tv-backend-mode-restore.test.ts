@@ -78,7 +78,12 @@ describe('TV 后端形态持久化', () => {
     )
     const at = settings.indexOf('async function saveAndReconnect()')
     expect(at).toBeGreaterThan(-1)
-    const body = settings.slice(at, at + 2200)
+    /*
+     * 取整个函数体（到下一个函数声明为止），不要用固定字符窗口：
+     * 函数里加几行注释就会把 TV 分支挤出窗口（2026-11-27 实测踩到）。
+     */
+    const end = settings.indexOf('function restoreEmbeddedBackend()', at)
+    const body = settings.slice(at, end > at ? end : at + 4000)
     expect(body, 'TV 壳内保存没有写回 prefs，重启会被旧值覆盖').toContain('b.saveConn(url')
     // 第二个参数是配置地址，不能传空串把手填的配置源清掉
     expect(body).toContain('prev.config')

@@ -25,6 +25,9 @@ import { assToVtt, srtToVtt, subtitleFormat, type MiddleSegment, type SubTrack }
 import {
   desktopQuit,
   hasSystemVolume,
+  iosNativeCmd,
+  isIosNativeLayer,
+  readIosNativeState,
   systemSleep,
   systemBrightness,
   systemVolume,
@@ -96,6 +99,24 @@ const rateOptions = [
   { value: 2.5, label: '2.5x' },
   { value: 3, label: '3x' },
 ]
+
+/**
+ * 端内原生渲染模式（2026-11-27）。
+ *
+ * <p>画面由 iOS 原生 VLCKit 出，本组件只当**控制层**：不加载 src、状态来自
+ * 原生推送（每 200ms）、操作转发给原生。
+ *
+ * <p>为什么不另写一个"长得像"的控制层：那等于两套 UI，样式永远差一点、改一
+ * 处要做两遍。判断走全局标记（壳注入的 `__meowNativeLayer`），所以父组件不
+ * 需要传参，普通播放路径一行都不受影响。
+ */
+const iosNative = isIosNativeLayer()
+/** 端内原生模式的轮询句柄（200ms 拉一次原生推送的状态） */
+let iosNativePoll = 0
+/** 锁屏进度同步定时器（网页路径，1s 一次） */
+let mediaSessionTimer = 0
+/** 已上报过的原生片源分辨率（去重，尺寸变化才再 emit） */
+let nativeSize = { w: 0, h: 0 }
 
 const props = withDefaults(defineProps<{
   src: string
@@ -276,7 +297,11 @@ const emit = defineEmits<{
    */
   (e: 'no-audio'): void
   /**
-   * 用户 seek 到「还没转出来」的位置（issue #17）。
+   * 端内原生播放拿到了片源分辨率（VLC videoSize）。
+   * 父组件的「更多」面板据此显示「原生 1920×1080」。
+   */
+  (e: 'native-size', size: { w: number; h: number }): void
+  /** 用户 seek 到「还没转出来」的位置（issue #17）。
    *
    * <p>播放器自己不能处理：清单里没有对应分片。父组件据此让后端从目标点
    * 重转（start=N），再把新清单换进来并 seek 到同一位置。
@@ -393,6 +418,12 @@ function firePowerLocally(action: PowerAction) {
 
 /** TV 原生定时器到点回推（Java 侧的 evalJs 调这两个全局函数） */
 function onPowerFire(action: string) {
+  // 端内原生渲染：声音/画面都在 VLC 里，`<video>.pause()` 停不了它
+  if (iosNative) {
+    iosNativeCmd('pause')
+    flashMarks(action === 'pause' ? '定时到，已暂停播放' : '定时到')
+    return
+  }
   const v = video.value
   if (v && !v.paused) v.pause()
   flashMarks(action === 'pause' ? '定时到，已暂停播放' : '定时到')
@@ -714,6 +745,14 @@ const hoverTime = ref<number | null>(null)
 
 /** 重播：回到开头继续播 */
 function restart() {
+  // 端内原生渲染：`<video>` 不参与播放，必须走原生（否则"从头开始"点了没反应）
+  if (iosNative) {
+    resumeAfterReload = 0
+    iosNativeCmd('seek', 0)
+    iosNativeCmd('play')
+    clearResume()
+    return
+  }
   const v = video.value
   if (!v) return
   // 重播是明确的"从头"：别让上一次刷新挂起的续播位置捣乱
@@ -726,6 +765,11 @@ function restart() {
 
 /** 从"投屏回到本机"等处恢复播放（不重置进度）。 */
 function play() {
+  if (iosNative) {
+    iosNativeCmd('play')
+    userPausedAt = 0
+    return
+  }
   const v = video.value
   if (v) {
     userPausedAt = 0
@@ -763,6 +807,10 @@ function safePlay(v: HTMLVideoElement) {
 
 /** 从外部跳到指定时间（续播恢复用） */
 function seekTo(sec: number) {
+  if (iosNative) {
+    if (Number.isFinite(sec)) iosNativeCmd('seek', Math.max(0, sec))
+    return
+  }
   const v = video.value
   if (!v || !Number.isFinite(sec)) return
   /*
@@ -785,6 +833,10 @@ function seekTo(sec: number) {
  * 重转。程序性跳转（续播恢复、seekAt）仍走 seekTo —— 它们必须夹住。
  */
 function userSeek(sec: number) {
+  if (iosNative) {
+    if (Number.isFinite(sec)) iosNativeCmd('seek', Math.max(0, sec))
+    return
+  }
   const v = video.value
   if (!v || !Number.isFinite(sec)) return
   const d = v.duration
@@ -851,16 +903,24 @@ function applySeekDialog() {
 
 /** 供外部读取当前进度 */
 function getTime(): number {
+  /*
+   * 端内原生渲染：`<video>.currentTime` 恒为 0（元素没在播），
+   * 必须读原生每 200ms 灌进来的 ref —— 否则 handoffPos()（原生重开、
+   * 投屏续播、进度回写）拿到的是"上次保存的位置"而不是正在看的位置。
+   */
+  if (iosNative) return currentTime.value
   return video.value?.currentTime ?? 0
 }
 
 /** 投屏接收页需要：本地是否暂停 / 总时长 */
 function isPaused(): boolean {
+  if (iosNative) return !playing.value
   const v = video.value
   return !v || v.paused
 }
 
 function getDuration(): number {
+  if (iosNative) return duration.value || props.totalDuration || 0
   const d = video.value?.duration
   return typeof d === 'number' && Number.isFinite(d) ? d : 0
 }
@@ -892,6 +952,15 @@ function retryNow() {
 
 /** 跳转秒数（相对当前） */
 function seekBy(sec: number) {
+  /*
+   * 端内原生渲染：`<video>.currentTime` 打不动 VLC —— 片头/片尾跳过、
+   * 中插跳过、快捷键都走这里，不给原生分支等于整组功能失效（2026-11-27 审计）。
+   */
+  if (iosNative) {
+    const t = currentTime.value + sec
+    iosNativeCmd('seek', Math.max(0, Number.isFinite(t) ? t : 0))
+    return
+  }
   const v = video.value
   if (!v) return
   const d = v.duration || 0
@@ -2012,6 +2081,8 @@ function armWatchdogs() {
 }
 
 function setupSource(url: string) {
+  // 端内原生渲染（2026-11-27）：画面不经过 <video>，src 只是换片的坐标
+  if (iosNative) return
   const v = video.value
   if (!v) return
   destroyHls()
@@ -2507,7 +2578,32 @@ function stopMedia() {
 
 // ---------------------------------------------------------------- playback
 
+/**
+ * 顶栏返回（2026-11-27）。
+ *
+ * <p>端内原生渲染时**不能 router.back()**：控制层是独立 WKWebView，历史里
+ * 只有这一条，退出去会落到首页（真机实报：点返回跳到了首页）。
+ * 这种情况要通知原生关掉播放器，由父页面恢复。
+ */
+function goBackFromPlayer() {
+  if (iosNative) {
+    /*
+     * 用户按的是「返回」，不是「关闭播放器」：带 back 标记关原生，父页面据此
+     * 直接 router.back() 回片库/详情，而不是弹"已退出端内播放器"面板
+     * （2026-11-27 用户实报：左上角返回后不该出现那个面板）。
+     */
+    iosNativeCmd('back')
+    return
+  }
+  router.back()
+}
+
 function toggle() {
+  if (iosNative) {
+    // 端内原生渲染：状态以原生推送为准，别用本地 playing 反推
+    iosNativeCmd(playing.value ? 'pause' : 'play')
+    return
+  }
   const v = video.value
   if (!v) return
   /*
@@ -2877,6 +2973,35 @@ const anyPanelOpen = computed(
     showDmSearch.value ||
     showHelp.value,
 )
+
+/**
+ * 端内原生渲染：控制层 WebView 可以整个收起来了吗（2026-11-27）。
+ *
+ * <p>透明 WKWebView 一直叠在 VLC 画面之上，合成器和主线程都要为它留预算；
+ * 收走后弹幕/画面回到纯原生渲染（真机上是"一顿一顿"的关键一环）。
+ *
+ * <p>★ 判据宁可保守：只有**这一个 WebView 上确实没有任何可交互/要显示的
+ * 东西**时才收 —— 锁屏解锁按钮、跳过片头/片尾、任何面板都在 webview 里，
+ * 收早了用户就再也点不到（锁定态尤其致命：点屏由原生转发回来，但
+ * `wake()` 在 locked 下直接 return，解锁按钮永远回不来）。
+ */
+const nativeLayerIdle = computed(
+  () =>
+    !showCtrl.value &&
+    !locked.value &&
+    !anyPanelOpen.value &&
+    !inIntro.value &&
+    !inOutro.value &&
+    !!iosNative,
+)
+
+if (iosNative) {
+  watch(
+    nativeLayerIdle,
+    (idle) => iosNativeCmd('bar', idle ? 0 : 1),
+    { immediate: true },
+  )
+}
 
 const canLock = computed(
   () =>
@@ -4124,6 +4249,13 @@ function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
   }
   muted.value = p === 0
   if (sys) setSystemVolume(p)
+  /*
+   * 端内原生渲染：`<video>` 不加载播放，唯一能出声的是原生 VLC —— 静音必须
+   * 走原生（系统音量）。滑块拖到 0 等同静音，拖回来要解除静音。
+   * 不同步这一包的话，原生侧会停在上一次的静音标记上（2026-11-27 真机实报
+   * "静音按了没反应、拉音量才有用"）。
+   */
+  if (iosNative) iosNativeCmd('mute', p === 0 ? 1 : 0)
   if (opts.save !== false) {
     // 高频项：静默落盘，不广播事件（否则会刷屏 WebDAV 同步）
     savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
@@ -4137,6 +4269,18 @@ function onVolumeInput(e: Event) {
 }
 
 function toggleMute() {
+  /*
+   * 端内原生渲染（2026-11-27 真机实报"静音按钮无效"）：
+   * 这里没有在播的 <video>，改 `v.muted` 等于改一个不存在的元素。
+   * 静音交给原生（系统音量置 0 / 还原），本地只维护 UI 状态与偏好；
+   * **不动 volume.value**，否则"取消静音"就找不回原来的音量。
+   */
+  if (iosNative) {
+    muted.value = !muted.value
+    iosNativeCmd('mute', muted.value ? 1 : 0)
+    savePrefs({ muted: muted.value, volume: volume.value }, { silent: true })
+    return
+  }
   const v = video.value
   if (!v) return
   if (v.muted || v.volume === 0) {
@@ -4150,6 +4294,11 @@ function toggleMute() {
 }
 
 function setRate(r: number) {
+  if (iosNative) {
+    iosNativeCmd('rate', r)
+    rate.value = r
+    return
+  }
   const v = video.value
   if (!v) return
   v.playbackRate = r
@@ -4469,6 +4618,12 @@ const router = useRouter()
  * 与 App.vue 的 `__meowTvRouteBack` 同一套判据。
  */
 function leavePlayback() {
+  // 端内原生渲染：控制层 WebView 的历史只有一条，router.back() 会落到首页/错误页
+  // （真机实报「返回跳到缺依赖类页面」）。带 back 标记关原生，由父页面后退。
+  if (iosNative) {
+    iosNativeCmd('back')
+    return
+  }
   const before = route.fullPath
   router.back()
   window.setTimeout(() => {
@@ -4715,11 +4870,43 @@ async function restoreFsIntent() {
 // ---------------------------------------------------------------- 画中画 / 字幕
 
 const pipOn = ref(false)
-const hasPip = typeof document !== 'undefined' && 'pictureInPictureEnabled' in document
+/**
+ * 画中画能力探测（2026-11-28）。
+ *
+ * <p>iOS Safari / WKWebView **没有** `document.pictureInPictureEnabled`，
+ * 只认 `video.webkitSupportsPresentationMode('picture-in-picture')` ——
+ * 原来只看前者，iPhone 上的 PiP 按钮永远不出现（网页播放器"有 PiP"实际是假的）。
+ */
+/*
+ * 不用 globalThis（Chrome 71+，legacy 门禁会拦）：HTMLVideoElement 是全局构造器，
+ * Chrome 66 也有。
+ */
+const hasPip = (() => {
+  if (typeof document === 'undefined') return false
+  if ('pictureInPictureEnabled' in document) return true
+  if (typeof HTMLVideoElement === 'undefined') return false
+  return 'webkitSupportsPresentationMode' in (HTMLVideoElement.prototype as object)
+})()
+
+type WebkitPipVideo = HTMLVideoElement & {
+  webkitSetPresentationMode?: (m: 'inline' | 'picture-in-picture') => void
+  webkitPresentationMode?: string
+}
 
 async function togglePip() {
-  const v = video.value
+  const v = video.value as WebkitPipVideo | null
   if (!v) return
+  // iOS：走 WebKit 私有但 Safari/WKWebView 公开支持的 presentationMode
+  if (typeof v.webkitSetPresentationMode === 'function') {
+    try {
+      const on = v.webkitPresentationMode === 'picture-in-picture'
+      v.webkitSetPresentationMode(on ? 'inline' : 'picture-in-picture')
+      pipOn.value = !on
+    } catch {
+      /* 源不允许 / 系统拒绝：静默 */
+    }
+    return
+  }
   try {
     if (document.pictureInPictureElement) {
       await document.exitPictureInPicture()
@@ -4730,6 +4917,66 @@ async function togglePip() {
     }
   } catch {
     /* 部分源/浏览器不支持，静默失败 */
+  }
+}
+
+// ---------------------------------------------------------------- 锁屏媒体信息（网页路径）
+
+type MediaSessionLike = {
+  metadata: unknown
+  setActionHandler: (a: string, h: ((d?: unknown) => void) | null) => void
+  setPositionState?: (s: { duration: number; position: number; playbackRate?: number }) => void
+}
+
+function mediaSessionApi(): MediaSessionLike | null {
+  const ms = (navigator as Navigator & { mediaSession?: MediaSessionLike }).mediaSession
+  return ms && typeof ms.setActionHandler === 'function' ? ms : null
+}
+
+/**
+ * 把标题/动作交给系统锁屏（2026-11-28）。
+ *
+ * <p>只覆盖**网页播放**路径：端内原生播放由 `MPNowPlayingInfoCenter` 负责，
+ * 两边同时写会互相覆盖，所以 `iosNative` 直接跳过。老内核没有 Media Session
+ * → 静默忽略（不影响播放）。
+ */
+function setupMediaSession() {
+  if (iosNative) return
+  const ms = mediaSessionApi()
+  if (!ms) return
+  try {
+    const MM = (window as unknown as {
+      MediaMetadata?: new (i: Record<string, unknown>) => unknown
+    }).MediaMetadata
+    if (MM) ms.metadata = new MM({ title: props.title || '猫窝', artist: props.site || '' })
+    ms.setActionHandler('play', () => play())
+    ms.setActionHandler('pause', () => pause())
+    ms.setActionHandler('seekbackward', () => seekBy(-10))
+    ms.setActionHandler('seekforward', () => seekBy(10))
+    ms.setActionHandler('seekto', (d) => {
+      const t = (d as { seekTime?: number } | undefined)?.seekTime
+      if (typeof t === 'number' && Number.isFinite(t)) userSeek(t)
+    })
+  } catch {
+    /* Media Session 部分实现会抛：不影响播放 */
+  }
+}
+
+/** 每秒同步一次锁屏进度（播放/暂停状态用 playbackRate=0/倍速 体现） */
+function syncMediaSessionState() {
+  if (iosNative) return
+  const ms = mediaSessionApi()
+  if (!ms?.setPositionState) return
+  const dur = duration.value
+  if (!Number.isFinite(dur) || dur <= 0) return
+  try {
+    ms.setPositionState({
+      duration: dur,
+      position: Math.min(dur, Math.max(0, currentTime.value)),
+      playbackRate: playing.value ? Math.min(3, Math.max(0.5, rate.value)) : 0,
+    })
+  } catch {
+    /* 位置越界/老内核：忽略 */
   }
 }
 
@@ -4802,6 +5049,8 @@ function onFullscreenChange() {
 function toggleDanmaku() {
   dmOn.value = !dmOn.value
   dm.value?.setEnabled(dmOn.value)
+  // 端内原生渲染时弹幕由原生画，开关必须同时发过去（否则点了没反应）
+  if (iosNative) iosNativeCmd('dm', dmOn.value ? 1 : 0)
 }
 
 // ---------------------------------------------------------------- 弹幕面板
@@ -6051,6 +6300,54 @@ function clearDmOffset() {
 }
 
 /**
+ * 把弹幕设置推给原生 overlay（端内原生渲染模式，2026-11-27）。
+ *
+ * <p>原生画弹幕时，透明度/字号/速度/区域/屏蔽词/校准全都只存在 web 侧；
+ * 原生只拿得到拉起那一刻的 metaJson。不实时推的话，用户在原生页里打开
+ * 「弹幕设置」怎么调都没反应（真机实报：弹幕挤、显示区域对不上）。
+ */
+function pushDmOptionsToNative() {
+  if (!iosNative) return
+  const p = prefs.value
+  iosNativeCmd('dmOptions', {
+    opacity: p.danmakuOpacity,
+    scale: p.danmakuScale,
+    duration: p.danmakuDuration,
+    area: p.danmakuArea,
+    block: props.dmBlockWords || '',
+    offset: dmOffset.value,
+  })
+}
+
+if (iosNative) {
+  // 面板改设置会替换 prefs 对象；屏蔽词/校准走各自的 ref。任一变化都推一次
+  watch(
+    () => {
+      const p = prefs.value
+      return [
+        p.danmakuOpacity,
+        p.danmakuScale,
+        p.danmakuDuration,
+        p.danmakuArea,
+        props.dmBlockWords || '',
+        dmOffset.value,
+      ].join('|')
+    },
+    () => pushDmOptionsToNative(),
+  )
+  /*
+   * 换集后的弹幕地址（2026-11-27）：原生只拿到拉起那一刻的 danmakuUrl，
+   * 不推的话切到第 2 集还在放第 1 集的弹幕。空值不发（弹幕还在解析/没有）。
+   */
+  watch(
+    () => props.danmakuUrl,
+    (u) => {
+      if (u) iosNativeCmd('dmUrl', u)
+    },
+  )
+}
+
+/**
  * 弹幕屏蔽。
  *
  * <p>三条规则：屏蔽词命中、纯符号刷屏、同屏重复（同一条文本在极短时间内
@@ -6151,6 +6448,15 @@ async function loadDanmaku(
   url: string,
   opts: { fresh?: boolean; serverOnly?: boolean; pick?: boolean } = {},
 ) {
+  /*
+   * 端内原生渲染：**每一次**真正发生的弹幕加载都要同步给原生（2026-11-27）。
+   *
+   * 之前只在 props.danmakuUrl 变化时推，漏了两条同样会换源的路径：
+   *   ① 30 秒自动重试（同 URL 重跑一次，上一次失败时原生那边还是空的）；
+   *   ② 面板手选弹幕源（走 dmOverrideUrl，不改 props）。
+   * 同 URL 是否重拉由原生侧判断（danmakuXml 为空才重拉），不会重复请求。
+   */
+  if (iosNative && url) iosNativeCmd('dmUrl', url)
   const fresh = opts.fresh === true
   /**
    * 只看后端（跳过 IndexedDB 读，网络请求**不带** fresh）。
@@ -6537,6 +6843,102 @@ function checkVideoDrops() {
 onMounted(() => {
   // 换集后恢复上一次的全屏状态（伪全屏，不需要用户手势）
   void restoreFsIntent()
+  /*
+   * 锁屏/控制中心（2026-11-28）：网页路径把标题与播放动作交给 Media Session；
+   * 端内原生播放由壳的 MPNowPlayingInfoCenter 负责（这两个函数内部已跳过）。
+   */
+  setupMediaSession()
+  mediaSessionTimer = window.setInterval(syncMediaSessionState, 1000)
+
+  /*
+   * 端内原生渲染（2026-11-27）：把原生的 200ms 快照灌进本组件自己的状态 ref。
+   * 所有控件读的都是 currentTime/duration/playing —— 控制条、浮层、进度条、
+   * 弹幕密度条全部照常工作，不需要另写一套 UI。
+   *
+   * 放在 restoreFsIntent 之后：原有初始化顺序（全屏意图、丢帧守卫、TV 定时器）
+   * 必须保持不变，改顺序会踩到那几处对时序敏感的回归。
+   */
+  if (iosNative) {
+    /*
+     * 换集要复位"已发过 ended"（2026-11-27）：web 路径在 setupSource 里复位，
+     * 而原生模式 setupSource 直接 return —— 不复位的话第二集播完 onMediaEnded
+     * 会被 endedSent 吞掉，连播只生效一次。
+     */
+    watch(
+      () => props.currentIndex,
+      () => {
+        endedSent = false
+      },
+    )
+    iosNativePoll = window.setInterval(() => {
+      const st = readIosNativeState()
+      if (!st) return
+      currentTime.value = st.t
+      duration.value = st.d
+      playing.value = st.p
+      // 片源分辨率只报一次（面板用）；后续同一尺寸不再 emit
+      if (st.sw > 1 && st.sh > 1 && (st.sw !== nativeSize.w || st.sh !== nativeSize.h)) {
+        nativeSize = { w: st.sw, h: st.sh }
+        emit('native-size', nativeSize)
+      }
+      if (rate.value !== 1) iosNativeCmd('rate', rate.value)
+    }, 200)
+    /*
+     * 进控制层就把当前弹幕设置与静音状态同步给原生（2026-11-27）。
+     * 原生只拿得到拉起那一刻的 metaJson；此后一切以这里推送为准。
+     */
+    pushDmOptionsToNative()
+    if (props.danmakuUrl) iosNativeCmd('dmUrl', props.danmakuUrl)
+    // 播放器偏好里弹幕是关的：原生 overlay 默认开着，必须显式同步一次
+    if (!dmOn.value) iosNativeCmd('dm', 0)
+    if (muted.value) iosNativeCmd('mute', 1)
+    /*
+     * 控制栏隐藏期间原生会把整个 WebView 收起来（bar=0）；点屏唤回时由
+     * NativeVlcPlayer 调这个钩子。没有它的话，WebView 虽然被原生放出来了，
+     * 但页面自己的 showCtrl 还是 false —— 屏幕上一片空白，用户以为卡死。
+     */
+    ;(window as unknown as { __meowVlcShowBar?: () => void }).__meowVlcShowBar = () => {
+      wake()
+    }
+    /*
+     * 原生自然播完（2026-11-27）：走与 `<video>` ended 同一条入口，
+     * 连播倒计时 / 立即下一集 / 关闭连播三种设置才和网页一致。
+     */
+    ;(window as unknown as { __meowVlcEnded?: () => void }).__meowVlcEnded = () => {
+      onMediaEnded()
+    }
+    /*
+     * 原生播放卡死（2026-11-28）：VLC 侧 12 秒位置不前进 → 当成"这条线路死了"，
+     * 走与 web 看门狗完全相同的失败链（换线 / 转码 / 重试），不再只能干等。
+     */
+    ;(window as unknown as { __meowVlcStalled?: () => void }).__meowVlcStalled = () => {
+      failPlay('原生播放 12 秒没有进展（这条线路可能已失效），正在尝试换线', 'stall')
+    }
+    /*
+     * 把「视频所在容器链」的背景清成透明（2026-11-27 真机实报「只有声音、
+     * 没画面也没弹幕」）。
+     *
+     * 为什么按祖先链清而不是写死选择器：页面骨架有几层、每层用什么类名，
+     * 随路由和主题变；但在 native 模式下 `<video>` 元素一定存在（只是不加载
+     * src），从它往上走到 body 就是完整的那条链。用内联 style + important，
+     * 优先级高于任何 Tailwind/CSS 类，且**不会碰到控制条**（控制条是兄弟节点，
+     * 不在链条上）。
+     */
+    void nextTick(() => {
+      let el: HTMLElement | null = video.value ?? null
+      let guard = 0
+      while (el && guard < 16) {
+        el.style.setProperty('background', 'transparent', 'important')
+        el.style.setProperty('background-color', 'transparent', 'important')
+        el.style.setProperty('background-image', 'none', 'important')
+        if (el === document.body) break
+        el = el.parentElement
+        guard += 1
+      }
+      document.documentElement.style.setProperty('background', 'transparent', 'important')
+      document.body.style.setProperty('background', 'transparent', 'important')
+    })
+  }
   // 3 秒一窗：15 秒后连续两窗命中 ≈ 18~21 秒触发，比 5 秒窗更早但不牺牲稳定性
   dropGuardTimer = window.setInterval(checkVideoDrops, 3000)
   // TV：从原生层恢复定时器显示（定时器在原生层，跨页面仍在跑）。
@@ -6555,7 +6957,9 @@ onMounted(() => {
       duration: p.danmakuDuration,
       area: p.danmakuArea,
     })
-    dm.value.setEnabled(dmOn.value)
+    // 端内原生渲染时弹幕由原生 VlcDanmakuOverlay 画：web 引擎必须关掉，
+    // 否则两层重复、而且透明 WebView 上的 canvas 会明显掉帧（2026-11-27 实测）
+    dm.value.setEnabled(iosNative ? false : dmOn.value)
     dm.value.setRate(v?.playbackRate || 1)
     dm.value.setOffset(dmOffset.value)
     // 暴露给桌面端诊断（src-tauri/src/mcp.rs 的 pc_danmaku 读取）。
@@ -6968,6 +7372,8 @@ watch(prefs, (p) => {
   })
   dmOn.value = p.danmaku
   dm.value?.setEnabled(p.danmaku)
+  // 端内原生渲染：开关也要给原生（否则设置页改了开关，原生层照旧显示）
+  if (iosNative) iosNativeCmd('dm', p.danmaku ? 1 : 0)
 }, { deep: true })
 
 onBeforeUnmount(() => {
@@ -6975,6 +7381,10 @@ onBeforeUnmount(() => {
   // 卸载后 onFullscreenChange 可能已经收不到（监听已摘），先按住这个标志，
   // 避免浏览器在元素移除时触发的 fullscreenchange 再把状态写乱。
   unmounting = true
+  if (iosNativePoll) {
+    window.clearInterval(iosNativePoll)
+    iosNativePoll = 0
+  }
   // 离开播放页/错误页时把 PC 的窗口全屏退掉；真全屏由 WebView2 在元素
   // 移除时自动退出，这里只处理我们通过 desktop_set_fullscreen 设置的那层。
   // 换集不再卸载本组件（见 PlayView 的 src 注释），所以不会误退。
@@ -7083,6 +7493,20 @@ onBeforeUnmount(() => {
     if (w.__meowIosActive === iosActiveBridge) w.__meowIosActive = undefined
   }
   window.removeEventListener('meow:webview-resume', onWebviewResume)
+  if (mediaSessionTimer) {
+    window.clearInterval(mediaSessionTimer)
+    mediaSessionTimer = 0
+  }
+  if (iosNative) {
+    // 卸载时摘掉原生回调：否则原生再调它就会碰到已销毁的组件状态
+    const w = window as unknown as {
+      __meowVlcShowBar?: () => void
+      __meowVlcEnded?: () => void
+    }
+    delete w.__meowVlcShowBar
+    delete w.__meowVlcEnded
+    delete (window as unknown as { __meowVlcStalled?: () => void }).__meowVlcStalled
+  }
   const w = window as unknown as { __meowPauseMedia?: () => void }
   if (w.__meowPauseMedia === pauseMediaOnHide) w.__meowPauseMedia = undefined
   // 所有一次性定时器都要清：组件销毁后它们仍会触发 ref 写入
@@ -7680,12 +8104,20 @@ function clearResume() {
 
 /** 暂停播放。投屏后本节要停，否则两边同时出声。 */
 function pause() {
-  const v = video.value
   // 外部（父组件/投屏）主动暂停：撤掉回前台续播的欠账，避免自己又播起来
   userPausedAt = Date.now()
   bgKeepPlaying = false
   cancelResumeTimers()
   clearRestoreWindow()
+  /*
+   * 端内原生渲染：`<video>.pause()` 打不到 VLC —— 投屏成功后本机不停的话
+   * 会和电视同时出声（2026-11-27 审计）。交给原生 pause 指令。
+   */
+  if (iosNative) {
+    iosNativeCmd('pause')
+    return
+  }
+  const v = video.value
   if (v && !v.paused) v.pause()
 }
 
@@ -7776,7 +8208,7 @@ defineExpose({
           </button>
           <button
             class="rounded-md bg-white/8 px-4 py-2 text-sm text-ink-2 transition hover:bg-white/14"
-            @click.stop="$router.back()"
+            @click.stop="goBackFromPlayer()"
           >
             返回
           </button>
@@ -8532,12 +8964,13 @@ defineExpose({
         </button>
 
         <!--
-          原生播放（TV 壳）：紧跟线路按钮右侧，主动把当前集交给 ExoPlayer。
-          触发父组件的 tryNative（带 header / 续播进度）；Web / PC 无桥不显示。
+          原生播放：紧跟线路按钮右侧，主动把当前集交给原生播放器（TV=ExoPlayer，
+          iOS=端内 VLCKit）。2026-11-27：按钮在窄屏（iPhone 竖屏）也要显示 ——
+          原来 `hidden sm:flex` 在手机上等于没有这个入口。
         -->
         <button
           v-if="nativeAvailable"
-          class="hidden shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 sm:flex"
+          class="flex shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20"
           title="用原生播放器播放"
           @click.stop="emit('nativePlay')"
         >

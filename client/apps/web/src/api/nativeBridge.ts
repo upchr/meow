@@ -360,6 +360,228 @@ export function openNative(
   }
 }
 
+// ---------------------------------------------------------------- iOS 原生兜底（VLCKit）
+
+/** iOS 壳的原生兜底桥（Bootstrap.swift 注入的 window.meowIos）。 */
+interface MeowIosNativeBridge {
+  nativeVlc?: boolean
+  openNativeVlc?: (o: Record<string, unknown>) => boolean
+}
+
+function iosBridge(): MeowIosNativeBridge | null {
+  try {
+    const b = (window as unknown as { meowIos?: MeowIosNativeBridge }).meowIos
+    return b && typeof b === 'object' ? b : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 当前端有没有原生兜底播放器（iOS 的 VLCKit，见 NativeVlcPlayer.swift）。
+ *
+ * <p>判据是壳注入的 `nativeVlc` 字段，**不是 UA**：同一台 iPhone 用 Safari
+ * 打开网页版仍然是 web 壳，不能给原生入口。老壳没有这个字段 → false，
+ * 调用方自然退回原来的提示路径。
+ */
+export function hasIosNativePlayer(): boolean {
+  const b = iosBridge()
+  return !!b && b.nativeVlc === true && typeof b.openNativeVlc === 'function'
+}
+
+/**
+ * 交给 iOS 原生播放器（VLCKit）。返回 false = 桥不可用/参数非法，调用方
+ * 应继续走当前 web 路径。
+ *
+ * <p>⚠️ postMessage 是单向通道：返回 true 只代表**消息已投递**，不代表播放
+ * 成功。失败由原生侧回传 `window.__meowVlcClosed`（见 onIosNativeClosed），
+ * 页面据此恢复并提示，而不是永远卡在 loading。
+ */
+export function openIosNative(
+  url: string,
+  title: string,
+  header?: unknown,
+  positionSec = 0,
+  danmakuUrl?: string,
+  metaJson?: string,
+  apiBaseUrl?: string,
+): boolean {
+  if (!url || !/^https?:/i.test(url)) return false
+  const b = iosBridge()
+  if (!b || b.nativeVlc !== true || typeof b.openNativeVlc !== 'function') return false
+  try {
+    return !!b.openNativeVlc({
+      url,
+      title: title || '',
+      headers: encodeHeaders(header),
+      positionMs: Math.max(0, Math.round(positionSec * 1000)),
+      danmakuUrl: danmakuUrl || '',
+      metaJson: metaJson || '',
+      // 控制层要另开一个 WKWebView，那边没有宿主注入的 apiBase ——
+      // 不带过去的话控制层页面调后端会全失败（2026-11-27）。
+      apiBase: apiBaseUrl || '',
+    })
+  } catch {
+    return false
+  }
+}
+
+/** 原生播放器关闭时回传的进度。 */
+export interface IosNativeClosed {
+  positionSec: number
+  durationSec: number
+  ended: boolean
+  /** 关掉原生后要跳去的路由（搜索/设置这类入口），空 = 不跳 */
+  nav?: string
+}
+
+/**
+ * 订阅原生播放器关闭（进度回传）。返回取消订阅函数。
+ *
+ * <p>同一页面只会有一个原生播放器，所以直接覆盖全局回调而不做多播。
+ */
+export function onIosNativeClosed(cb: (r: IosNativeClosed) => void): () => void {
+  const w = window as unknown as { __meowVlcClosed?: (r: unknown) => void }
+  w.__meowVlcClosed = (raw: unknown) => {
+    const o = (raw || {}) as Record<string, unknown>
+    cb({
+      positionSec: Number(o.positionSec) || 0,
+      durationSec: Number(o.durationSec) || 0,
+      ended: o.ended === true,
+      nav: typeof o.nav === 'string' ? o.nav : '',
+    })
+  }
+  return () => {
+    if (w.__meowVlcClosed) delete w.__meowVlcClosed
+  }
+}
+
+// ---------------------------------------------------------------- 原生渲染 + web 控制层
+//
+// 2026-11-27：iOS 的原生播放器改成「VLC 只渲染画面，控制层用透明 WKWebView
+// 加载播放页（native=1）」。这样图一那套控件/弹幕/选集/线路全部复用现有组件，
+// 不必在 Swift 里复刻一遍（复刻等于永久维护两套 UI）。
+
+/** 当前页面是不是原生渲染的控制层（NativeVlcPlayer 注入）。 */
+export function isIosNativeLayer(): boolean {
+  try {
+    return (window as unknown as { __meowNativeLayer?: boolean }).__meowNativeLayer === true
+  } catch {
+    return false
+  }
+}
+
+/** 原生每 250ms 推来的播放状态。 */
+export interface IosNativeState {
+  /** 当前位置（秒） */
+  t: number
+  /** 总时长（秒），0 = 还没拿到 */
+  d: number
+  /** 是否在播 */
+  p: boolean
+  /** 视频实际显示区域（aspect-fit 后，像素）——弹幕要按它裁剪，否则飘黑边 */
+  vx: number
+  vy: number
+  vw: number
+  vh: number
+  /** 片源分辨率（VLC 的 videoSize；0 = 还没拿到）——媒体信息面板用 */
+  sw: number
+  sh: number
+}
+
+/**
+ * 读最近一次原生状态。没收到过返回 null（调用方据此显示"加载中"）。
+ *
+ * <p>为什么用全局对象而不是事件：推送频率 4Hz，事件订阅要处理解绑；
+ * 控制层本来就每帧渲染，直接读快照最省。
+ */
+export function readIosNativeState(): IosNativeState | null {
+  try {
+    const raw = (window as unknown as { __meowNativeState?: Record<string, unknown> })
+      .__meowNativeState
+    if (!raw || typeof raw !== 'object') return null
+    return {
+      t: Number(raw.t) || 0,
+      d: Number(raw.d) || 0,
+      p: raw.p === true,
+      vx: Number(raw.vx) || 0,
+      vy: Number(raw.vy) || 0,
+      vw: Number(raw.vw) || 0,
+      vh: Number(raw.vh) || 0,
+      sw: Number(raw.sw) || 0,
+      sh: Number(raw.sh) || 0,
+    }
+  } catch {
+    return null
+  }
+}
+
+export type IosNativeOp =
+  | 'play'
+  | 'pause'
+  | 'seek'
+  | 'rate'
+  | 'close'
+  /** 控制栏显隐：隐藏时把整个 WebView 收起来，视频回到纯原生渲染 */
+  | 'bar'
+  /** 弹幕开关（弹幕由原生 VlcDanmakuOverlay 画） */
+  | 'dm'
+  /** 换集后的新弹幕地址（原生只拿得到拉起那一刻的 danmakuUrl） */
+  | 'dmUrl'
+  /**
+   * 弹幕设置（透明度/字号/速度/区域/屏蔽词/校准）。value 是一个对象，
+   * 原生按新参数立即重排 —— 只发开关的话，进了原生页再调面板不生效。
+   */
+  | 'dmOptions'
+  /** 静音/取消静音（原生渲染时 `<video>` 不存在，只能让原生改系统音量） */
+  | 'mute'
+  /** 关原生后让父页面跳到该路由（搜索/设置） */
+  | 'nav'
+  /**
+   * 用户按了「返回」：关原生并让父页面 router.back()，不要再弹"已退出"面板
+   * （2026-11-27 用户实报：左上角返回后不该出现那个面板）。
+   */
+  | 'back'
+  /** 换地址继续原生播（选集/换线用，value 是第二参） */
+  | 'open'
+  | 'orientation'
+
+/**
+ * 向原生播放器发指令。返回 false = 桥不在（非原生模式）。
+ *
+ * <p>postMessage 单向，返回 true 只代表消息已投递。
+ */
+export function iosNativeCmd(
+  op: IosNativeOp,
+  value?: number | string | Record<string, unknown>,
+): boolean {
+  try {
+    const b = (window as unknown as {
+      meowIos?: { nativeCmd?: (op: string, value: unknown) => boolean }
+    }).meowIos
+    if (!b || typeof b.nativeCmd !== 'function') return false
+    return !!b.nativeCmd(op, value ?? 0)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 让原生换片（选集 / 换线路）。
+ *
+ * <p>与裸 `iosNativeCmd('open', url)` 的区别：把**这一集**的 header 与字幕
+ * 一起带过去。换线路时防盗链头可能和上一条不同，只换 URL 会 403（真机上表现为
+ * "换线路后一直黑屏"）；字幕随 media 重建，换集不会残留上一集的外挂字幕。
+ * 原生侧对同一 URL 会忽略（不把进度打回 0）。
+ */
+export function iosNativeOpen(url: string, header?: unknown, sub?: string): boolean {
+  return iosNativeCmd('open', {
+    url,
+    headers: encodeHeaders(header),
+    sub: sub || '',
+  })
+}
+
 // ---------------------------------------------------------------- 系统睡眠
 
 /**

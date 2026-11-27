@@ -35,13 +35,13 @@ import {
   waitLibraryTranscode,
   waitTranscode,
 } from '@/api/library'
-import { skipWindowFrom, startAtFrom, subTracksFrom } from '@/api/playExtras'
+import { skipWindowFrom, startAtFrom, subTracksFrom, subtitleFormat } from '@/api/playExtras'
 import { isHi10p, resolvePlaybackRoute, webCanDecodeVideo, webviewAudioCodecs } from '@/utils/playRoute'
 import { detectCodecCaps } from '@/utils/codecCaps'
 import { transcodeBadge, transcodeMediaInfo, type MediaSourceInfo } from '@/utils/mediaInfo'
 import { fmtSeekClock, transcodeRestartStart } from '@/utils/transcodeSeek'
 import type { MediaProbeResult } from '@/api/library'
-import { embedPlay, hasEmbedPlayer, hasNativePlayer, nativeCodecCaps, openNative } from '@/api/nativeBridge'
+import { embedPlay, hasEmbedPlayer, hasIosNativePlayer, hasNativePlayer, isIosNativeLayer, iosNativeOpen, nativeCodecCaps, onIosNativeClosed, openIosNative, openNative } from '@/api/nativeBridge'
 import { meowDiagnose } from '@/ai/tools'
 import { explainDiagnosis } from '@/ai/llm'
 import { CAUSE_LABEL, type Diagnosis } from '@/ai/diagnose'
@@ -719,6 +719,21 @@ const needsParser = computed(() => {
 const spiderSkip = computed(() => skipWindowFrom(play.value?.skips))
 const spiderStartAt = computed(() => startAtFrom(play.value?.position))
 const playSubs = computed(() => subTracksFrom(play.value?.subs))
+/**
+ * 端内原生播放器能直接吃的字幕地址（2026-11-27）。
+ *
+ * <p>VLC 自带 srt/ass/vtt 解码，不需要网页那套「转 VTT + blob」；但地址必须是
+ * **绝对 URL** 且经后端代理（源站常要求 Referer）。取第一份格式可用的即可 ——
+ * 网页的字幕也是"有就用第一份"。
+ */
+function nativeSubUrl(): string {
+  for (const s of playSubs.value) {
+    if (!s.url) continue
+    if (subtitleFormat(s) === 'other') continue
+    return absoluteApi(proxyStream(s.url))
+  }
+  return ''
+}
 
 /**
  * 多画质清单（后端 `normalizePlay` 折出来的）。
@@ -895,6 +910,22 @@ async function load() {
   }  // 片库直链：没有 spider 的 play 可调，地址已经在 query 里。
   // 直接构造一个只有 url 的 PlayResult 交给播放器（它有 hls.js + 原生两条路）。
   if (isLibraryPlay.value) {
+    /*
+     * 端内原生渲染层（2026-11-27）：这里跑在透明控制层 WebView 里，画面由
+     * VLCKit 出 —— **不要再做"这个内核能不能播"的判断**。
+     *
+     * 真机实报"选集/换线路点了没反应"的根因就在这：.mkv 会先命中下面的
+     * 「容器不支持 → 转码」分支，而转码预检在 iOS 上必然失败（没有 ffmpeg），
+     * `play.value` 永远不会被赋值 → 监听 `play.url` 的原生换片逻辑收不到地址。
+     * 原生模式只要把地址交出去：换片由 watch(play.url) → iosNativeOpen()
+     * 完成，同地址重复投递由原生侧吞掉（不会把进度打回 0）。
+     */
+    if (iosNativeLayer.value) {
+      play.value = { url: libraryDirect.value } as PlayResult
+      loading.value = false
+      loadingText.value = ''
+      return
+    }
     /*
      * F5（2026-11-17）：不吃 MKV/AVI 等容器的内核（Safari 全平台、桌面
      * Chrome/Edge）直连必然失败，却要先白等播放器 25 秒 watchdog 才进转码兜底。
@@ -1099,7 +1130,10 @@ function switchEpisode(i: number) {
   // 换集时播放器不再卸载（见 src 的注释），旧视频不会自己停。
   // 先暂停：加载新地址的 0.4–2 秒里不能继续出声/继续走时间
   // （进度写入已由 progressArmed 挡住，但声音挡不住）。
-  player.value?.pause()
+  //
+  // 端内原生渲染例外：声音在 VLC 那边，pause() 打不到它；让旧片继续放到
+  // 新地址到达、由原生 open 直接换片，比先黑屏等地址更连续。
+  if (!iosNativeLayer.value) player.value?.pause()
   /*
    * ★ 换集要清掉"这一集试过的线路"（2026-10-31 修"偶现无法播放"）。
    *
@@ -1381,7 +1415,8 @@ const errorSubText = computed(() => {
 const canUseNative = computed(() => {
   const raw = play.value?.url
   const u = typeof raw === 'string' ? raw : ''
-  return hasNativePlayer() && !!u && /^https?:/i.test(u)
+  // TV 有 ExoPlayer 桥，iOS 有端内 VLCKit：两者都算"能用原生播"
+  return (hasNativePlayer() || hasIosNativePlayer()) && !!u && /^https?:/i.test(u)
 })
 
 /** 当前应从哪里开始播：有续播记录就用它，否则从头 */
@@ -1414,6 +1449,8 @@ function buildNativeMeta(): string {
       flag: flag.value,
       epUrl: rawId.value,
       apiBase: apiBase(),
+      // 外挂字幕（原生 VLC 直接加载；空串 = 本集没有）
+      sub: nativeSubUrl(),
       dm: {
         opacity: prefs.danmakuOpacity,
         scale: prefs.danmakuScale,
@@ -1449,8 +1486,14 @@ function switchToNativePlayer() {
   tryNative()
 }
 
-/** 错误页的「用原生播放器打开」：把当前地址交给 ExoPlayer 再试一次 */
+/** 错误页的「用原生播放器打开」：TV 交 ExoPlayer，iOS 交端内 VLCKit */
 function tryNative() {
+  /*
+   * iOS 没有 ExoPlayer 桥：同一入口按能力分派到端内 VLCKit
+   * （2026-11-27）。不先分派的话，iOS 上这个按钮会被 canUseNative 隐藏，
+   * 用户就只剩"换线路/重试"两条路 —— 而 VLCKit 往往能直接播。
+   */
+  if (hasIosNativePlayer() && tryIosNative()) return
   const raw = play.value?.url
   const u = typeof raw === 'string' ? raw : ''
   if (!u) return
@@ -1470,6 +1513,115 @@ function tryNative() {
 }
 
 /**
+ * iOS 原生兜底（端内 VLCKit，2026-11-27）。
+ *
+ * <p>触发点：web 的 `<video>` 播不了（MKV/AVI/FLV/DTS/10-bit），而 iOS 既没有
+ * 服务端 ffmpeg 也不能 fork —— 端内 VLCKit 是唯一能真播的路径。与 TV 的
+ * `tryNative()` 同构：弹幕地址、进度交接、弹幕设置都走同一份 `buildNativeMeta()`。
+ *
+ * <p>返回 true = **消息已投递**（WKScriptMessageHandler 是单向通道，拿不到
+ * 播放结果）。播失败由原生回传 `window.__meowVlcClosed` 让页面恢复进度并提示。
+ */
+/**
+ * 本页是不是「原生渲染 + web 控制层」那一层。
+ *
+ * <p>NativeVlcPlayer 会开一个透明 WKWebView 加载同一路由并注入
+ * `__meowNativeLayer = true`：画面由端内 VLCKit 渲染，控制层就是本页 DOM
+ * （组件 NativeIosControlLayer）。这样图一那套控件/弹幕/选集/线路全部复用，
+ * 不在 Swift 里复刻第二套 UI。
+ */
+const iosNativeLayer = ref(isIosNativeLayer())
+/** 刚从端内播放器退出（父页面据此显示"重新打开"面板，而不是尝试 web 直连 MKV） */
+const nativeExited = ref(false)
+
+
+/*
+ * 端内原生渲染模式：web 侧切集/换线后把新地址交给原生换片。
+ *
+ * 这样 VideoPlayer 里的「选集/换线路」面板完全不需要改 —— 它们照旧 emit
+ * switch/line，父组件照旧更新 play.value，这里监听到地址变化就转发给原生。
+ */
+watch(
+  () => (typeof play.value?.url === 'string' ? play.value.url : ''),
+  (u) => {
+    if (!iosNativeLayer.value || !u) return
+    if (u.includes('/api/transcode')) return
+    // 带上这一集的 header（换线路时防盗链头可能和上一条不同）与字幕
+    iosNativeOpen(absoluteApi(u), play.value?.header, nativeSubUrl())
+  },
+)
+
+/** 从"已退出"面板重新拉起端内播放器 */
+function reopenNative() {
+  nativeExited.value = false
+  nativeJustClosed = false
+  if (!tryIosNative()) showSilentHint('端内播放器没拉起来（地址或桥异常）')
+}
+
+/** "已退出"面板的「下一集」：关掉面板，按普通切集路径走（会再拉起原生） */
+function nativePlayNext() {
+  const i = currentIndex.value
+  if (i < 0 || i >= playlist.value.length - 1) return
+  nativeExited.value = false
+  nativeJustClosed = false
+  switchEpisode(i + 1)
+}
+
+function tryIosNative(): boolean {
+  // 已经是原生控制层：再调 openNativeVlc 会无限套娃（一层套一层）
+  if (iosNativeLayer.value) return false
+  // 刚被用户从原生播放器返回：本帧不再自动拉起（否则看到的是黑屏死循环）
+  if (nativeJustClosed) {
+    nativeJustClosed = false
+    return false
+  }
+  if (!hasIosNativePlayer()) return false
+  /*
+   * 片库播放时 play.value 还没建（预判就发生在起播前），地址只在
+   * query.direct 里；它是相对路径（/api/library/stream?...），必须绝对化 ——
+   * VLC 跑在原生层，拿不到页面的 location.origin。
+   */
+  const raw = play.value?.url || libraryDirect.value
+  const u = typeof raw === 'string' ? raw : ''
+  if (!u) return false
+  const abs = absoluteApi(u)
+  if (!/^https?:/i.test(abs)) return false
+  const ok = openIosNative(
+    abs,
+    title,
+    play.value?.header,
+    handoffPos(),
+    danmakuUrl.value,
+    buildNativeMeta(),
+    // 控制层是另一个 WKWebView，得把后端地址带过去（那边没有宿主注入的桥）
+    apiBase(),
+  )
+  if (ok) {
+    // 原生接管后 web 播放器必须停：否则两路同时出声音
+    player.value?.stop?.()
+    loading.value = false
+    loadingText.value = ''
+    error.value = ''
+    hopError.value = ''
+    showSilentHint('已用端内播放器打开（原生解码，MKV/DTS 也能播）')
+    dbg('ios-native', abs.slice(0, 120))
+  }
+  return ok
+}
+
+/*
+ * 选集 / 换线路在原生控制层里**不另写一套**（2026-11-27 修正）。
+ *
+ * <p>上一版在这里放了 nativeSelectEpisode/nativeSelectLine 两个"本层取地址再
+ * 直接发 open"的函数，但模板从没调用过（白写）；而真正在用的路径是
+ * switchEpisode/switchLine → router.replace → 路由 watcher → load()。
+ *
+ * <p>现在统一走那条既有路径：load() 在 iosNativeLayer 下有"只解析地址"的
+ * 快速分支，地址落地后由 `watch(play.url) → iosNativeOpen()` 换片。
+ * 好处是路由/进度/集名高亮只有一个真源，不会出现"面板里换了、历史还记着旧集"。
+ */
+
+/**
  * 让后端把这个源现转成 HLS（H.264）。
  *
  * 只对"浏览器解不了"这种失败有意义：换线路解决不了编码问题，
@@ -1477,8 +1629,7 @@ function tryNative() {
  * **源文件不动**。
  *
  * 已转好的分片是增量的：前几个分片就绪即可起播，不用等整片转完。
- */
-async function tryTranscode(src: string, copy = false, repair = false, startAt = 0,
+ */async function tryTranscode(src: string, copy = false, repair = false, startAt = 0,
                             allowHevc = true) {
   /*
    * ★ 能力预检收在函数入口（2026-11-27）：调用点有 10+ 处（自愈、换线、
@@ -1486,6 +1637,12 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
    *   放在这里既覆盖全部，也不改变"有 ffmpeg 的端"任何行为。
    */
   if (!(await ensureTranscodeProbe())) {
+    /*
+     * iOS 端内 VLCKit 能真播这些格式（MKV/AVI/FLV/DTS）：有它就先交给它，
+     * 别直接给"本端没有转码能力"。自愈（repair）不切原生 —— 用户正在网页里
+     * 正常看，突然跳原生页体验更差，宁可保持原样播。
+     */
+    if (!repair && tryIosNative()) return
     handleTranscodeUnavailable(repair)
     return
   }
@@ -1785,6 +1942,12 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
    *   跟用户选的片子毫无关系。收在函数入口，一处覆盖全部。
    */
   if (!(await ensureTranscodeProbe())) {
+    /*
+     * iOS 端内 VLCKit 能真播这些格式（MKV/AVI/FLV/DTS）：有它就先交给它，
+     * 别直接给"本端没有转码能力"。自愈（repair）不切原生 —— 用户正在网页里
+     * 正常看，突然跳原生页体验更差，宁可保持原样播。
+     */
+    if (!repair && tryIosNative()) return
     handleTranscodeUnavailable(repair)
     return
   }
@@ -2810,6 +2973,105 @@ function fmtSec(sec: number) {
 // 离开播放页不停止投屏（电视继续放）；只停本地轮询。
 onMounted(restoreCastSession)
 
+/*
+ * iOS 端内播放器（VLCKit）关闭时把位置写回历史（2026-11-27）。
+ *
+ * 原生层播的是同一集，但 currentTime 在原生进程里 —— 不写回的话，用户从
+ * 原生回网页后历史还停在进页位置（TV 的 metaJson 回传解决的是同一个问题）。
+ */
+let offIosNativeClosed: (() => void) | null = null
+/**
+ * 刚从原生播放器回来（2026-11-27 真机实报「返回后黑屏」）。
+ *
+ * <p>原生 dismiss 后父页面恢复可见，但如果原地址是 MKV，这一帧会立刻再走
+ * 一次「转码预检 → 拉起原生」，形成「返回→又进原生」的死循环，视觉上就是
+ * 黑屏。标记只挡一次，用户手动点重试/换集后照常。
+ */
+let nativeJustClosed = false
+onMounted(() => {
+  offIosNativeClosed = onIosNativeClosed((r) => {
+    if (r.positionSec > 0) {
+      saveProgress(
+        { site, vod_id: vodId },
+        {
+          pos: r.positionSec,
+          dur: r.durationSec,
+          flag: flag.value,
+          ep: epName.value,
+          epUrl: rawId.value,
+        },
+        { notify: r.ended },
+      )
+    }
+    /*
+     * 左上角「返回」（2026-11-27 用户要求）：直接回上一页，**不弹**"已退出
+     * 端内播放器"面板。控制层是独立 WebView，历史里只有它自己，所以后退必须
+     * 由父页面代劳；没有历史可退时（深链进入）兜底回片库/首页。
+     */
+    if (r.nav === '__back__') {
+      nativeExited.value = false
+      nativeJustClosed = true
+      const before = route.fullPath
+      router.back()
+      window.setTimeout(() => {
+        if (route.fullPath !== before) return
+        void router.replace(isLibraryPlay.value ? { name: 'library' } : { name: 'home' })
+      }, 300)
+      return
+    }
+    /*
+     * 搜索/设置这类入口：关原生后直接路由过去（控制层在独立 WebView 里，
+     * 自己跳不动父页面，只能由这里代劳）。
+     */
+    if (r.nav) {
+      void router.push(r.nav)
+      return
+    }
+    /*
+     * 播完了：按连播设置直接进下一集（2026-11-27）。
+     *
+     * 原生页结束时已经把播放器 dismiss 了，父页面是可见的；这里如果不接手，
+     * 用户看到的就是"一集播完停在已退出面板"。倒计时分支在父页面里画不出来
+     * （倒计时浮层挂在 VideoPlayer 的 #overlay 里，而父页面没挂播放器），
+     * 所以在原生链路里 countdown/immediate 一律按"立即下一集"处理。
+     */
+    if (
+      r.ended &&
+      prefs.autoNextMode !== 'off' &&
+      currentIndex.value >= 0 &&
+      currentIndex.value + 1 < playlist.value.length
+    ) {
+      // 这次是"要继续播"：不能让 nativeJustClosed 把重新拉起原生的那次吞掉
+      nativeJustClosed = false
+      nativeExited.value = false
+      switchEpisode(currentIndex.value + 1)
+      return
+    }
+    /*
+     * 回到 web 后必须把上一轮的错误/遮罩清干净：不清的话父页面停在
+     * 「本端没有转码能力」那张错误页上（黑底 + 文字），用户看到的就是黑屏。
+     */
+    nativeJustClosed = true
+    error.value = ''
+    hopError.value = ''
+    playError.value = ''
+    loading.value = false
+    loadingText.value = ''
+    transcodeWaiting.value = false
+    libraryNoDirect.value = false
+    /*
+     * 明确给一个"已退出"的界面：父页面若去尝试 web 直连 MKV 必然失败，
+     * 用户看到的是黑屏 + 一个很小的错误页（2026-11-27 真机实报「返回黑屏」）。
+     */
+    nativeExited.value = true
+    dbg('ios-native-closed', `${r.positionSec}/${r.durationSec} ended=${r.ended}`)
+  })
+})
+onBeforeUnmount(() => {
+  offIosNativeClosed?.()
+  offIosNativeClosed = null
+})
+
 /**
  * 原生播放器退出时回传选中轨道编码（桥 meowTv.nativeTracks(key)）。
  *
@@ -2845,6 +3107,17 @@ function syncNativeTracks() {
   } catch {
     /* 桥返回坏 JSON / 老壳没有：都不影响播放 */
   }
+}
+
+/**
+ * 端内原生播放报来的片源分辨率（2026-11-28）。
+ *
+ * <p>VLC 能稳定给的只有 videoSize；编码名各版本接口不一（tracksInformation
+ * 有/没有、字段也变过），所以面板先显示「原生 1920×1080」，编码留空。
+ */
+function onNativeSize(s: { w: number; h: number }) {
+  if (!(s.w > 1 && s.h > 1)) return
+  mediaInfo.value = { via: 'native', srcWidth: s.w, srcHeight: s.h }
 }
 
 /** 同片里第一条非 4K 线路（用于"自动降 1080p"） */
@@ -3686,7 +3959,8 @@ function switchLine(name: string, opts: { auto?: boolean } = {}) {
   const ep = line ? sameEpisodeIn(line) : null
   if (!line || !ep) return
   // 与换集同因：播放器保持挂载，换线期间必须先把旧视频停下来。
-  player.value?.pause()
+  // 端内原生渲染例外（声音在 VLC 那边，pause() 打不到它），交给 open 换片。
+  if (!iosNativeLayer.value) player.value?.pause()
   if (!opts.auto) {
     // 手动换线路：用户主动选择，清掉自动换源的失败记录重新计
     try {
@@ -3921,7 +4195,7 @@ onBeforeUnmount(() => {
       换集/换线时 src 保留上一集地址、播放器继续挂载，加载提示改成播放器里的
       浮层（见 #overlay）—— 整页替换会卸载 <video>，PC 上直接丢掉窗口全屏。
     -->
-    <div v-if="loading && !src" class="grid h-full place-items-center">
+    <div v-if="loading && !src && !iosNativeLayer" class="grid h-full place-items-center">
       <div class="text-center">
         <div class="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-accent" />
         <p class="mt-4 text-sm text-ink-3">{{ loadingText }}</p>
@@ -3983,7 +4257,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else-if="error" class="grid h-full place-items-center px-6">
+    <div v-else-if="error && !iosNativeLayer" class="grid h-full place-items-center px-6">
       <div class="max-w-md text-center">
         <div class="text-4xl opacity-40">🎬</div>
         <p class="mt-4 text-sm text-ink-2">{{ errorMainText }}</p>
@@ -4061,10 +4335,15 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!--
+      iOS 原生渲染模式（2026-11-27）：画面由端内 VLCKit 出，这里渲染的是
+      **同一个 VideoPlayer**（只是不加载 src、状态来自原生推送）——
+      控制条/浮层/弹幕密度条全部复用同一套模板与样式，不再另写一个"长得像"的。
+    -->
     <VideoPlayer
-      v-else-if="src"
+      v-else-if="iosNativeLayer || src"
       ref="player"
-      :src="src"
+      :src="iosNativeLayer ? '' : src"
       :total-duration="libraryTotalDuration"
       :ahead-seconds="libraryAhead"
       :ahead-start-seconds="libraryStart"
@@ -4099,6 +4378,7 @@ onBeforeUnmount(() => {
       :casting="!!castSession"
       :cache-state="cacheState"
       :cache-percent="cachePercent"
+      @native-size="onNativeSize"
       @loaded="applyResume"
       @seek-applied="refreshSeekAt = 0"
       @seek-beyond="onSeekBeyond"
@@ -4289,6 +4569,44 @@ onBeforeUnmount(() => {
         </div>
       </template>
     </VideoPlayer>
+
+    <!--
+      端内原生播放器已退出（2026-11-27）。
+      父页面此时没有 src、也没有 error —— 不画这块会落到"纯黑屏、没有任何入口"
+      （真机实报：从原生返回后只能强退）。三个出口：继续用原生（同一集）、
+      下一集、返回上一页。
+    -->
+    <div
+      v-if="nativeExited"
+      class="absolute inset-0 z-[140] grid place-items-center bg-black/85 px-6"
+    >
+      <div class="max-w-sm text-center">
+        <p class="text-sm text-ink-2">已退出端内播放器</p>
+        <p class="mt-1.5 text-xs text-ink-3">原生解码页已关闭，可以从这里继续。</p>
+        <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+          <button
+            class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent transition hover:bg-accent-dim"
+            @click="reopenNative"
+          >
+            继续用端内播放器
+          </button>
+          <button
+            v-if="currentIndex >= 0 && currentIndex < playlist.length - 1"
+            class="rounded-md bg-white/12 px-4 py-2 text-sm text-ink-2 transition hover:bg-white/20"
+            @click="nativePlayNext"
+          >
+            下一集
+          </button>
+          <button
+            class="rounded-md bg-white/8 px-4 py-2 text-sm text-ink-2 transition hover:bg-white/14"
+            @click="router.back()"
+          >
+            返回
+          </button>
+        </div>
+      </div>
+    </div>
+
 
     <!-- 离线播放：明确告诉用户"这不是源站，是本机缓存"，否则会误以为在线的 -->
     <div

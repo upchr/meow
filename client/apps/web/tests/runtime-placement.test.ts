@@ -61,6 +61,15 @@ describe('运行时状态放在哪', () => {
     expect(settings).toContain("{ id: 'runtime', label: '运行时' }")
     // 分区标题必须与导航 label 一致（settings-nav-sync 的判据）
     expect(settings).toContain('<h2 class="set-title">运行时</h2>')
+    /*
+     * ★ 模板里用到 ≠ 组件会渲染：RuntimeDepsPanel 必须显式 import。
+     *   漏掉时 Vue 只在 console 报 Unresolved component，「运行时」分区
+     *   只剩标题 + 副标题（2026-11-27 iOS 真机实测；静态门禁以前只查了
+     *   `<RuntimeDepsPanel` 的出现，用法在模板里也算，所以没拦住）。
+     */
+    expect(settings).toContain(
+      "import RuntimeDepsPanel from '@/components/common/RuntimeDepsPanel.vue'",
+    )
     // PC：运行时状态并入插件列表（状态胶囊右侧标 JS / PY），不再单开一块
     // （2026-11-27 用户口径：去掉「脚本运行时」独立显示）
     expect(settings).not.toContain('<RuntimeDepsPanel :plugins="plugins" />')

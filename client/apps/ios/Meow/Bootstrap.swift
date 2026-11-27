@@ -1,4 +1,6 @@
 import Foundation
+// 改后端地址要重建 WKUserScript（见 reloadWebWithCurrentBackend）
+import WebKit
 
 /// 启动顺序：
 ///  1. 准备沙盒数据目录（首次启动播种空配置）
@@ -17,6 +19,12 @@ final class Bootstrap: ObservableObject {
 
     /// 不参与观察：webURL 变化时 RootView 已经会重建 WebView。
     var bootScript = ""
+
+    /// 端内后端地址（JVM 起在 9978；起不来为空串）。
+    /// ★ 必须在**用户覆盖之前**记下：改地址后要能答出「恢复端内」是哪个地址。
+    static var embeddedBase = ""
+    /// 启动参数 `--site`（重载重建注入脚本时要带上，否则深链丢失）
+    static var launchSite = ""
 
     private let staticServer = StaticServer()
     private var started = false
@@ -126,8 +134,22 @@ final class Bootstrap: ObservableObject {
         }
         #endif
 
-        let site = Self.argValue("--site") ?? ""
-        bootScript = Self.makeBootScript(base: base, site: site)
+        /*
+         * 用户指定的后端地址（2026-11-27，对齐 TV 的「后端地址可配」）。
+         *
+         * 端内 JVM 仍然照常启动（页面/静态服务/弹幕载荷都依赖它这条链路），
+         * 但**桥注入的 apiBase 以用户配置为准** —— resolveBase() 在 iOS 只认
+         * 桥，所以这里换值就等于整页换后端。空串 = 用端内后端。
+         */
+        Self.embeddedBase = base
+        let override = BackendOverride.current()
+        if !override.isEmpty {
+            base = override
+            LaunchLog.write("backend override: \(override)")
+        }
+
+        Self.launchSite = Self.argValue("--site") ?? ""
+        bootScript = Self.makeBootScript(base: base, site: Self.launchSite)
         webURL = URL(string: "http://127.0.0.1:9979/")
         LaunchLog.write("web url set (base=\(base.isEmpty ? "none" : base))")
         startStaticWatchdog()
@@ -210,6 +232,34 @@ final class Bootstrap: ObservableObject {
         return parts.joined(separator: ":")
     }
 
+    /// 当前生效的后端地址：用户覆盖优先，否则端内。
+    static func effectiveBase() -> String {
+        let o = BackendOverride.current()
+        return o.isEmpty ? embeddedBase : o
+    }
+
+    /**
+     * 改完后端地址后**用新 apiBase 重建注入脚本并重载**。
+
+     * <p>为什么不让页面自己 `location.reload()`（2026-11-27 真机实测）：
+     * boot 脚本是 `makeUIView` 时以 `WKUserScript(.atDocumentStart)` 注册进去的，
+     * reload 只会重跑**旧**脚本 —— 注入的 `apiBase` 仍是启动那一刻的值，
+     * 用户看到的就是「地址刚填上又被刷回 127.0.0.1:9978」。
+     * 所以必须先换掉注册的脚本、再 reload。
+     */
+    static func reloadWebWithCurrentBackend() {
+        guard let wv = WebViewRegistry.view else { return }
+        let base = effectiveBase()
+        let script = makeBootScript(base: base, site: launchSite)
+        let uc = wv.configuration.userContentController
+        uc.removeAllUserScripts()
+        uc.addUserScript(WKUserScript(source: script,
+                                      injectionTime: .atDocumentStart,
+                                      forMainFrameOnly: false))
+        LaunchLog.write("backend reload: base=\(base.isEmpty ? "none" : base)")
+        wv.reload()
+    }
+
     private static func makeBootScript(base: String, site: String) -> String {
         var js: [String] = []
         // 壳身份：前端 compat/shell.ts 只认桥对象（不看 UA —— Safari 打开同一页面
@@ -218,6 +268,25 @@ final class Bootstrap: ObservableObject {
                   + "build:'\(Self.buildId())',"
                   + "apiBase:'\(Self.jsString(base))',"
                   + "runtime:'OpenJDK 9 Zero（静态链接 · -Xint）'}")
+        /*
+         * 后端地址可配（2026-11-27）：`apiBackend` 是当前生效值（含用户覆盖），
+         * `setApiBackend(url)` 写入 UserDefaults，"" = 恢复端内后端。
+         * 落盘后必须整页 reload 才生效（aria 的桥是文档级注入）。
+         */
+        js.append("window.meowIos.apiBackend='\(Self.jsString(base))'")
+        js.append("window.meowIos.setApiBackend=function(u){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'apiBackend',value:String(u||'')});"
+                  + "return true}catch(e){return false}}")
+        /*
+         * 原生兜底播放桥（2026-11-27）：web 的 <video> 播不了 MKV/AVI/FLV/DTS
+         * 时交给端内 VLCKit。`nativeVlc` 是**同步的 feature detect** ——
+         * postMessage 是单向异步，拿不到返回值，所以能力探测必须靠注入的字段：
+         * 老壳没有它 → 前端 hasIosNativePlayer() 为 false → 退回原来的提示。
+         */
+        js.append("window.meowIos.nativeVlc=true")
+        js.append("window.meowIos.openNativeVlc=function(o){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage(Object.assign({op:'nativeVlc'},o||{}))"
+                  + "}catch(e){return false}return true}")
         /*
          * 转屏桥：播放页全屏要横屏。WKWebView 里没有 Screen Orientation API 的
          * lock（非全屏上下文一律拒绝），只能让原生转；前端 shellSetOrientation
@@ -359,5 +428,37 @@ final class Bootstrap: ObservableObject {
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return false
+    }
+}
+
+/**
+ * 用户手填的后端地址（iOS 的「后端地址」设置）。
+ *
+ * <p>为什么放在 UserDefaults 而不是 localStorage：BootScript 是
+ * `.atDocumentStart` 注入的，页面 JS 还没跑 —— 启动时必须由壳先读出这份值，
+ * 才能决定 `meowIos.apiBase` 指向端内 JVM 还是外部后端。
+ *
+ * <p>空串 = 用端内后端（默认）。写 "" 即清除覆盖。改完由设置页 location.reload()
+ * 让桥重新注入（新值在下次 makeBootScript 生效）。
+ */
+enum BackendOverride {
+    private static let key = "meow.api.base"
+
+    static func current() -> String {
+        let v = UserDefaults.standard.string(forKey: key) ?? ""
+        return v.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 写入覆盖地址；非法协议返回 false（调用方不要拿它去重载网页）。
+    @discardableResult
+    static func set(_ raw: String) -> Bool {
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 只收 http(s)：file:// / about: 之类写进去会让整页白屏
+        let ok = v.isEmpty || v.lowercased().hasPrefix("http://") || v.lowercased().hasPrefix("https://")
+        guard ok else { return false }
+        if v.isEmpty { UserDefaults.standard.removeObject(forKey: key) }
+        else { UserDefaults.standard.set(v, forKey: key) }
+        LaunchLog.write("backend override -> \(v.isEmpty ? "(embedded)" : v)")
+        return true
     }
 }
