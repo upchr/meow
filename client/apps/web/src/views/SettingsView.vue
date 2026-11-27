@@ -8725,7 +8725,9 @@ onBeforeUnmount(() => {
               取消
             </button>
             <span v-if="updBusy" class="text-[11px] text-ink-3">
-              {{ updStage }}<template v-if="updPhase === 'downloading'"> {{ updPercent }}%</template>
+              <!-- ★ stage（原生 message 或「下载中 x%」）本身已带百分号，2026-11-28
+                   实测 .77：这里再拼一次 updPercent% 会显示成「下载中 0%0%」 -->
+              {{ updStage }}
             </span>
           </div>
           <!-- 进度条：电视上没有鼠标指针，纯数字不够直观 -->
