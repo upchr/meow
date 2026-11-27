@@ -1,24 +1,71 @@
+/*
+ * 仓库顺序：本地与 CI 用不同优先级。
+ *
+ * 背景（2026-11-27 实测踩坑）：release-v1.2.28 的 TV APK 就挂在
+ *   "Could not GET .../com/chaquo/python/runtime/chaquopy/17.2.0/chaquopy-17.2.0.pom
+ *    Received status code 502 from server: Bad Gateway"
+ * —— 阿里云镜像网关 502。Gradle 对 5xx 是**致命**的（只有 404 才会继续试下一个
+ * 仓库），镜像抖一下整包就没了，而且重跑也未必躲得开。
+ *
+ * 分工：
+ *   本地（国内网络）→ 阿里云镜像排前：dl.google.com 常被打断，media3 的 aar 在
+ *     镜像上是同步的（实测 1.4.1 可拉）。官方源留兜底，换网络环境也不会卡死。
+ *   CI（GitHub runner，不在国内）→ 官方源排前：dl.google.com / repo1.maven.org
+ *     在 runner 上又快又稳；阿里云降级成兜底（404 会自动落到下一个仓库）。
+ *
+ * com.chaquo.* 单独拎出来：Chaquopy 的构件只发布在 Maven Central，Google 仓库里
+ * 没有。绝不能让它落到 google 镜像上（就是它 502 的）。
+ */
+
 pluginManagement {
     repositories {
-        // 阿里云镜像排最前：本地网络到 dl.google.com 常被打断，
-        // 而 media3 的 aar 在镜像上是同步的（实测 1.4.1 可拉）。
-        // 保留 google()/mavenCentral() 兜底，换网络环境也不会卡死。
-        maven { url 'https://maven.aliyun.com/repository/google' }
-        maven { url 'https://maven.aliyun.com/repository/public' }
-        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
-        google()
-        mavenCentral()
-        gradlePluginPortal()
+        def ci = (System.getenv('CI') ?: '').toLowerCase() == 'true'
+        if (ci) {
+            google()
+            mavenCentral()
+            gradlePluginPortal()
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/public' }
+            maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        } else {
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/public' }
+            maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+            google()
+            mavenCentral()
+            gradlePluginPortal()
+        }
     }
 }
+
 dependencyResolutionManagement {
     repositories {
-        maven { url 'https://maven.aliyun.com/repository/google' }
-        maven { url 'https://maven.aliyun.com/repository/public' }
-        google()
-        mavenCentral()
+        // Chaquopy（com.chaquo.*）只走 Maven Central 系，不碰 google 镜像。
+        def ci = (System.getenv('CI') ?: '').toLowerCase() == 'true'
+        exclusiveContent {
+            if (ci) {
+                forRepository { mavenCentral() }
+                forRepository { maven { url 'https://maven.aliyun.com/repository/public' } }
+            } else {
+                forRepository { maven { url 'https://maven.aliyun.com/repository/public' } }
+                forRepository { mavenCentral() }
+            }
+            filter { includeGroupByRegex 'com\\.chaquo\\..*' }
+        }
+        if (ci) {
+            google()
+            mavenCentral()
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/public' }
+        } else {
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/public' }
+            google()
+            mavenCentral()
+        }
     }
 }
+
 rootProject.name = "meow-tv"
 include(":app")
 include(":plugin-api")
