@@ -35,6 +35,14 @@ on:
         description: 模块补丁号（全量发版传壳补丁号，如 1.2.23 → 23；留空=旧行为）
         required: false
         default: ''
+      tv_python_version:
+        description: tv-python 完整版本（v1.3.0 起：0.<app次段>.<app修订>，如 0.3.0）
+        required: false
+        default: ''
+      tv_node_version:
+        description: tv-node 完整版本（18.20.4.<app次段*100+app修订>，如 18.20.4.300）
+        required: false
+        default: ''
   workflow_call:
     inputs:
       node_version:
@@ -44,6 +52,16 @@ on:
         default: '18.20.4'
       patch_version:
         description: 模块补丁号（全量发版传壳补丁号；留空=旧行为）
+        required: false
+        type: string
+        default: ''
+      tv_python_version:
+        description: tv-python 完整版本（留空=patch_version 旧方案）
+        required: false
+        type: string
+        default: ''
+      tv_node_version:
+        description: tv-node 完整版本（留空=patch_version 旧方案）
         required: false
         type: string
         default: ''
@@ -142,7 +160,10 @@ jobs:
           set -euo pipefail
           cd client/apps/tv/runtime-node
           # ubuntu runner 自带 pwsh；脚本内部已按平台切 curl.exe/curl
-          pwsh -NoProfile -File build-runtime-module.ps1 -NodeVersion "${{ inputs.node_version }}" -PatchVersion "${{ inputs.patch_version }}"
+          ARGS=(-NodeVersion "${{ inputs.node_version }}" -PatchVersion "${{ inputs.patch_version }}")
+          # v1.3.0 起优先用完整版本号（旧 patch 方案在 minor 进位时会倒退）
+          if [ -n "${{ inputs.tv_node_version }}" ]; then ARGS+=(-ModuleVersion "${{ inputs.tv_node_version }}"); fi
+          pwsh -NoProfile -File build-runtime-module.ps1 "${ARGS[@]}"
 
       # ── Python 运行时模块（Chaquopy）────────────────────────────────
       # 与 node 模块不同：没有"上游二进制"要下，但 Chaquopy 的 pip 要联网取
@@ -159,7 +180,9 @@ jobs:
           cd client/apps/tv/runtime-python
           # -PbuildPython 覆盖 build.gradle 里的平台默认值（Windows pyenv 路径）
           # 不传 OutDir：脚本按版本号自建目录（release/runtime-python-0.1.<补丁>）
-          pwsh -NoProfile -File build-runtime-module.ps1 -PatchVersion "${{ inputs.patch_version }}"
+          ARGS=(-PatchVersion "${{ inputs.patch_version }}")
+          if [ -n "${{ inputs.tv_python_version }}" ]; then ARGS+=(-ModuleVersion "${{ inputs.tv_python_version }}"); fi
+          pwsh -NoProfile -File build-runtime-module.ps1 "${ARGS[@]}"
 
       - name: 自检 Python 模块
         shell: bash

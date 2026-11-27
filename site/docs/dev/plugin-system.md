@@ -356,7 +356,7 @@ pyrt 的 inject 示例见 `server/plugin-manifests/pyrt.manifest.json`
 （`"key": "pyRuntimeAddr"`）。
 
 > ★ 键名是 `pyRuntimeAddr` 不是 `pyRuntime`：iOS 壳用 `policy.pyRuntime`
-> 存 Python 启动状态对象。合并 iOS 分支时不要改回去。
+> 存 Python 启动状态对象。iOS 端内也只写状态、不写地址键。
 
 danmu-api 用同一套机制，健康端点就是一个真实弹幕查询
 （`/api/v2/fongmi/danmaku?name=test`），超时给到 90 秒（首次要拉聚合源）。

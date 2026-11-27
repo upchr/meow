@@ -89,13 +89,15 @@ function Get-CurrentUnitVersion([string]$id) {
             }
         }
         'tv-node' {
-            # 全量链用 -PatchVersion 传壳补丁号 → 模块版本 18.20.4.<壳补丁>
+            # v1.3.0 起随 app 版本单调：18.20.4.<次段*100+修订>（1.3.0 → 18.20.4.300）
+            # 大版本进位（2.0.0）时 node 基座会升级，连基座 bump 即恢复单调
             $p = $Version.Split('.')
-            if ($p.Count -ge 3) { return "18.20.4.$([int]$p[2])" }
+            if ($p.Count -ge 3) { return "18.20.4.$([int]$p[1] * 100 + [int]$p[2])" }
         }
         'tv-python' {
+            # v1.3.0 起：0.<app次段>.<app修订>（1.3.0 → 0.3.0）
             $p = $Version.Split('.')
-            if ($p.Count -ge 3) { return "0.1.$([int]$p[2])" }
+            if ($p.Count -ge 3) { return "0.$([int]$p[1]).$([int]$p[2])" }
         }
     }
     return ''

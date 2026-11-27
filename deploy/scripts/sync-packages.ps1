@@ -550,7 +550,7 @@ if ($scope -contains 'plugins') {
         # pyrt 的说明要写清楚：它**不自带** python（Windows 版内置；其它平台靠系统
         # 的 execFallback 依次试 python3 / python.exe），装了没 python 会静默起不来。
         if ($pid2 -eq 'pyrt') {
-            $entry.desc = '让 .py 源在本机执行（需系统已装 Python 3.10+）；.js 源由它转发给 drpy'
+            $entry.desc = '让 .py 源在本机执行（需系统已装 Python 3.10+）；.js 源由 drpy 运行时执行'
         }
         # 依赖：声明式（units.json），优先级高于沿用旧值
         if ($unitsDeps.ContainsKey($pid2)) { $entry.requires = @($unitsDeps[$pid2]) }

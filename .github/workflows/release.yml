@@ -81,6 +81,8 @@ jobs:
       tvplugins: ${{ steps.buildset.outputs.tvplugins || steps.scope.outputs.tvplugins }}
       # 模块补丁号 = 壳补丁号（1.2.23 → 23），让模块版本跟上壳（18.20.4.23 / 0.1.23）
       patch_version: ${{ steps.buildset.outputs.patch_version }}
+      tv_python_version: ${{ steps.buildset.outputs.tv_python_version }}
+      tv_node_version: ${{ steps.buildset.outputs.tv_node_version }}
       release: ${{ steps.scope.outputs.release }}
     steps:
       - uses: actions/checkout@v4
@@ -221,6 +223,17 @@ jobs:
           echo "guard=$GUARD" >> "$GITHUB_OUTPUT"
           echo "tvplugins=$TVPLUGINS" >> "$GITHUB_OUTPUT"
           echo "patch_version=$PATCH" >> "$GITHUB_OUTPUT"
+          # ── 模块版本（v1.3.0 改版）─────────────────────────────────
+          # 旧方案 0.1.<壳补丁> 在 minor 进位时倒退（1.3.0 → 0.1.0 < 0.1.24），
+          # 客户端按版本号判定"已是最新"就永远升不上去。改成随 app 版本单调：
+          #   tv-python 0.<次段>.<修订>      1.3.0 → 0.3.0
+          #   tv-node   18.20.4.<次段*100+修订>  1.3.0 → 18.20.4.300
+          # 边界：app 大版本进位（2.0.0）时 node/Chaquopy 基座本身会升级，
+          # 连基座一起 bump 即恢复单调 —— 到时候记得同步改这里和守卫。
+          VER_BODY="${GITHUB_REF_NAME#release-v}"
+          IFS='.' read -r _MA _MI _PA <<< "$VER_BODY"
+          echo "tv_python_version=0.${_MI}.${_PA}" >> "$GITHUB_OUTPUT"
+          echo "tv_node_version=18.20.4.$(( _MI * 100 + _PA ))" >> "$GITHUB_OUTPUT"
           echo "构建范围：plugins=$ONLY tvplugins=$TVPLUGINS patch=$PATCH（自 ${PREV:-无} 起改动：${CHANGED:-无}）"
 
   web:
@@ -322,6 +335,9 @@ jobs:
     with:
       # 模块补丁号跟壳走（1.2.23 → 23）：tv-node 18.20.4.23 / tv-python 0.1.23
       patch_version: ${{ needs.plan.outputs.patch_version }}
+      # v1.3.0 起：模块版本随 app 版本单调（0.1.<补丁> 在 minor 进位时倒退）
+      tv_python_version: ${{ needs.plan.outputs.tv_python_version }}
+      tv_node_version: ${{ needs.plan.outputs.tv_node_version }}
     secrets: inherit
 
   # ── iOS 未签名 IPA（2026-11-24 接入）────────────────────────────────────

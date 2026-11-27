@@ -4533,7 +4533,7 @@ const PLUGIN_LABELS: Record<string, string> = {
   drpy: 'drpy 运行时',
   pyrt: 'Python 运行时',
 }
-/** 运行时职责标识：谁服务 .js、谁服务 .py（pyrt 还负责把 .js 转发给 drpy） */
+/** 运行时职责标识：谁服务 .js、谁服务 .py（2026-11-28 分层后两引擎各自直连） */
 const RUNTIME_BADGES: Record<string, string> = { drpy: 'JS', pyrt: 'PY' }
 
 const sortedPlugins = computed(() => {
@@ -6083,7 +6083,7 @@ onBeforeUnmount(() => {
         <h2 class="set-title">本机插件</h2>
         <span class="text-[11px] text-ink-3">
           按需下载 · 开关 = 是否随应用启动 · <span class="text-ink-2">JS</span> 跑 .js 源 ·
-          <span class="text-ink-2">PY</span> 跑 .py 源（并把 .js 转发给 drpy）
+          <span class="text-ink-2">PY</span> 跑 .py 源
         </span>
         <span class="flex-1" />
         <button
@@ -6344,8 +6344,9 @@ onBeforeUnmount(() => {
         <span v-else class="rounded-full px-2 py-0.5 text-[11px]" :class="phaseClass(p.phase)">
           {{ phaseText(p.phase) }}
         </span>
-        <!-- 运行时职责标识（2026-11-27）：drpy 跑 .js、pyrt 跑 .py 并转发 .js。
-             以前这块信息在列表上方另开一段显示，现在贴在状态胶囊右侧，一行看完。 -->
+        <!-- 运行时职责标识（2026-11-28 分层后）：drpy 跑 .js、pyrt 跑 .py，
+             两个引擎各自直连，不再互相转发。以前这块信息在列表上方另开一段，
+             现在贴在状态胶囊右侧，一行看完。 -->
         <span
           v-if="runtimeBadge(p.id)"
           class="rounded px-1.5 py-0.5 text-[10px] font-medium"
@@ -6353,7 +6354,7 @@ onBeforeUnmount(() => {
           :title="
             runtimeBadge(p.id) === 'JS'
               ? '执行 .js（drpy 方言）源'
-              : '执行 .py 源，并把 .js 转发给 drpy'
+              : '执行 .py 源'
           "
         >
           {{ runtimeBadge(p.id) }}

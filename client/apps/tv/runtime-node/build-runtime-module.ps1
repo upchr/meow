@@ -29,7 +29,10 @@ param(
     [string]$OutDir,
     # ★ 显式补丁号（2026-11-26）：CI 全量发版传壳补丁号（1.2.23 → 23），
     #   版本变成 18.20.4.23，客户端才会按版本号更新；留空时沿用 .deps 自增（本地）。
-    [string]$PatchVersion = ''
+    [string]$PatchVersion = '',
+    # ★ 完整版本名（v1.3.0 起）：CI 传 18.20.4.<app次段*100+app修订>（1.3.0 →
+    #   18.20.4.300 > 旧 18.20.4.28）。旧方案 0/倒退问题与 python 版相同。
+    [string]$ModuleVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -127,7 +130,7 @@ $inputsHash = -join ($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($
 
 $prevHash = if (Test-Path $inputsFile) { (Get-Content $inputsFile -Raw).Trim() } else { '' }
 # 显式 PatchVersion 优先（CI 全量）；否则按 .deps 自增（本地）
-$useExplicit = $PatchVersion -match '^\d+$'
+$useExplicit = ($PatchVersion -match '^\d+$') -or ($ModuleVersion -match '^\d+(\.\d+){1,3}$')
 $patch = if ($useExplicit) { [int]$PatchVersion }
          elseif (Test-Path $versionFile) { [int](Get-Content $versionFile -Raw).Trim() }
          else { 1 }
@@ -152,7 +155,9 @@ if (-not $useExplicit -and ($Force -or $prevHash -ne $inputsHash)) {
     $inputsHash | Set-Content $inputsFile -Encoding ASCII
     $patch | Set-Content $versionFile -Encoding ASCII
 }
-$fullVersion = "$NodeVersion.$patch"
+# 显式 ModuleVersion（CI）> NodeVersion.patch 组合；本地无显式时按 .deps 自增
+$fullVersion = if ($ModuleVersion -match '^\d+(\.\d+){1,3}$') { $ModuleVersion }
+               else { "$NodeVersion.$patch" }
 
 # ---------------------------------------------------------------- 逐 ABI 出包
 foreach ($abi in $Abis) {

@@ -395,7 +395,7 @@ JVM 在**导入配置时**由 `core/Dex2Jvm` 把只有 `classes.dex` 的 jar 转
 
 > ★ 键名是 `pyRuntimeAddr` 不是 `pyRuntime`：iOS 壳用 `policy.pyRuntime`
 > 存 Python 启动状态对象（`{state,error,at}`，见 `client/apps/ios/Meow/PythonRuntime.swift`）。
-> 地址与状态必须分键，合并 iOS 分支时不要改回 `pyRuntime`。
+> 地址与状态必须分键，iOS 端内也确实只写 `pyRuntime`（状态）不写地址。
 
 请求协议（两个引擎相同）：
 

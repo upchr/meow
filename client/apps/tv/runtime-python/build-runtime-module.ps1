@@ -23,14 +23,20 @@ param(
     [string]$OutDir,
     # ★ 显式补丁号（2026-11-26）：CI 全量发版传壳补丁号（1.2.23 → 23），
     #   版本变成 0.1.23，客户端才会按版本号更新；留空时保持 0.1.0。
-    [string]$PatchVersion = ''
+    [string]$PatchVersion = '',
+    # ★ 完整版本名（v1.3.0 起）：CI 传 0.<app次段>.<app修订>（1.3.0 → 0.3.0）。
+    #   旧方案 0.1.<壳补丁> 在 minor 进位时会倒退（1.3.0 → 0.1.0 < 0.1.24），
+    #   客户端按版本号判定"已是最新"就永远升不上去。
+    [string]$ModuleVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tvRoot = Split-Path -Parent $here
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $tvRoot))
-$versionName = if ($PatchVersion -match '^\d+$') { "0.1.$PatchVersion" } else { '0.1.0' }
+$versionName = if ($ModuleVersion -match '^\d+\.\d+\.\d+$') { $ModuleVersion }
+              elseif ($PatchVersion -match '^\d+$') { "0.1.$PatchVersion" }
+              else { '0.1.0' }
 if (-not $OutDir) { $OutDir = Join-Path $repoRoot "release\runtime-python-$versionName" }
 
 $gradle = if (Test-Path 'C:\Android\gradle-8.9\bin\gradle.bat') {

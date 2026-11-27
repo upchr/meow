@@ -5013,7 +5013,7 @@ public class ApiServer {
      * `client/apps/ios/Meow/PythonRuntime.swift`）。地址与状态必须分键，
      * 否则 iOS 侧写一次状态就把地址覆盖成 JSON 对象。
      *
-     * <p>★ iOS 合并提示（2026-11-28，给 iOS 会话看的）：端内 **不需要**写这个键 ——
+     * <p>★ 与 iOS 的分工：端内 **不写这个键** ——
      * iOS 是"单地址"形态（jsRuntime 指向端内 pyrt，.js 由它转给端内 node），
      * 这里返回空时 `callScriptRuntime` 会自动回落到 jsRuntime，iOS 行为一字不变。
      * 将来若要把端内 pyrt 拆成独立 py 地址，只需在 PythonRuntime.swift 里
