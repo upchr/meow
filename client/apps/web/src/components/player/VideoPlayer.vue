@@ -113,6 +113,10 @@ const rateOptions = [
 const iosNative = isIosNativeLayer()
 /** 端内原生模式的轮询句柄（200ms 拉一次原生推送的状态） */
 let iosNativePoll = 0
+/** 锁屏进度同步定时器（网页路径，1s 一次） */
+let mediaSessionTimer = 0
+/** 已上报过的原生片源分辨率（去重，尺寸变化才再 emit） */
+let nativeSize = { w: 0, h: 0 }
 
 const props = withDefaults(defineProps<{
   src: string
@@ -293,7 +297,11 @@ const emit = defineEmits<{
    */
   (e: 'no-audio'): void
   /**
-   * 用户 seek 到「还没转出来」的位置（issue #17）。
+   * 端内原生播放拿到了片源分辨率（VLC videoSize）。
+   * 父组件的「更多」面板据此显示「原生 1920×1080」。
+   */
+  (e: 'native-size', size: { w: number; h: number }): void
+  /** 用户 seek 到「还没转出来」的位置（issue #17）。
    *
    * <p>播放器自己不能处理：清单里没有对应分片。父组件据此让后端从目标点
    * 重转（start=N），再把新清单换进来并 seek 到同一位置。
@@ -4862,11 +4870,43 @@ async function restoreFsIntent() {
 // ---------------------------------------------------------------- 画中画 / 字幕
 
 const pipOn = ref(false)
-const hasPip = typeof document !== 'undefined' && 'pictureInPictureEnabled' in document
+/**
+ * 画中画能力探测（2026-11-28）。
+ *
+ * <p>iOS Safari / WKWebView **没有** `document.pictureInPictureEnabled`，
+ * 只认 `video.webkitSupportsPresentationMode('picture-in-picture')` ——
+ * 原来只看前者，iPhone 上的 PiP 按钮永远不出现（网页播放器"有 PiP"实际是假的）。
+ */
+/*
+ * 不用 globalThis（Chrome 71+，legacy 门禁会拦）：HTMLVideoElement 是全局构造器，
+ * Chrome 66 也有。
+ */
+const hasPip = (() => {
+  if (typeof document === 'undefined') return false
+  if ('pictureInPictureEnabled' in document) return true
+  if (typeof HTMLVideoElement === 'undefined') return false
+  return 'webkitSupportsPresentationMode' in (HTMLVideoElement.prototype as object)
+})()
+
+type WebkitPipVideo = HTMLVideoElement & {
+  webkitSetPresentationMode?: (m: 'inline' | 'picture-in-picture') => void
+  webkitPresentationMode?: string
+}
 
 async function togglePip() {
-  const v = video.value
+  const v = video.value as WebkitPipVideo | null
   if (!v) return
+  // iOS：走 WebKit 私有但 Safari/WKWebView 公开支持的 presentationMode
+  if (typeof v.webkitSetPresentationMode === 'function') {
+    try {
+      const on = v.webkitPresentationMode === 'picture-in-picture'
+      v.webkitSetPresentationMode(on ? 'inline' : 'picture-in-picture')
+      pipOn.value = !on
+    } catch {
+      /* 源不允许 / 系统拒绝：静默 */
+    }
+    return
+  }
   try {
     if (document.pictureInPictureElement) {
       await document.exitPictureInPicture()
@@ -4877,6 +4917,66 @@ async function togglePip() {
     }
   } catch {
     /* 部分源/浏览器不支持，静默失败 */
+  }
+}
+
+// ---------------------------------------------------------------- 锁屏媒体信息（网页路径）
+
+type MediaSessionLike = {
+  metadata: unknown
+  setActionHandler: (a: string, h: ((d?: unknown) => void) | null) => void
+  setPositionState?: (s: { duration: number; position: number; playbackRate?: number }) => void
+}
+
+function mediaSessionApi(): MediaSessionLike | null {
+  const ms = (navigator as Navigator & { mediaSession?: MediaSessionLike }).mediaSession
+  return ms && typeof ms.setActionHandler === 'function' ? ms : null
+}
+
+/**
+ * 把标题/动作交给系统锁屏（2026-11-28）。
+ *
+ * <p>只覆盖**网页播放**路径：端内原生播放由 `MPNowPlayingInfoCenter` 负责，
+ * 两边同时写会互相覆盖，所以 `iosNative` 直接跳过。老内核没有 Media Session
+ * → 静默忽略（不影响播放）。
+ */
+function setupMediaSession() {
+  if (iosNative) return
+  const ms = mediaSessionApi()
+  if (!ms) return
+  try {
+    const MM = (window as unknown as {
+      MediaMetadata?: new (i: Record<string, unknown>) => unknown
+    }).MediaMetadata
+    if (MM) ms.metadata = new MM({ title: props.title || '猫窝', artist: props.site || '' })
+    ms.setActionHandler('play', () => play())
+    ms.setActionHandler('pause', () => pause())
+    ms.setActionHandler('seekbackward', () => seekBy(-10))
+    ms.setActionHandler('seekforward', () => seekBy(10))
+    ms.setActionHandler('seekto', (d) => {
+      const t = (d as { seekTime?: number } | undefined)?.seekTime
+      if (typeof t === 'number' && Number.isFinite(t)) userSeek(t)
+    })
+  } catch {
+    /* Media Session 部分实现会抛：不影响播放 */
+  }
+}
+
+/** 每秒同步一次锁屏进度（播放/暂停状态用 playbackRate=0/倍速 体现） */
+function syncMediaSessionState() {
+  if (iosNative) return
+  const ms = mediaSessionApi()
+  if (!ms?.setPositionState) return
+  const dur = duration.value
+  if (!Number.isFinite(dur) || dur <= 0) return
+  try {
+    ms.setPositionState({
+      duration: dur,
+      position: Math.min(dur, Math.max(0, currentTime.value)),
+      playbackRate: playing.value ? Math.min(3, Math.max(0.5, rate.value)) : 0,
+    })
+  } catch {
+    /* 位置越界/老内核：忽略 */
   }
 }
 
@@ -6744,6 +6844,13 @@ onMounted(() => {
   // 换集后恢复上一次的全屏状态（伪全屏，不需要用户手势）
   void restoreFsIntent()
   /*
+   * 锁屏/控制中心（2026-11-28）：网页路径把标题与播放动作交给 Media Session；
+   * 端内原生播放由壳的 MPNowPlayingInfoCenter 负责（这两个函数内部已跳过）。
+   */
+  setupMediaSession()
+  mediaSessionTimer = window.setInterval(syncMediaSessionState, 1000)
+
+  /*
    * 端内原生渲染（2026-11-27）：把原生的 200ms 快照灌进本组件自己的状态 ref。
    * 所有控件读的都是 currentTime/duration/playing —— 控制条、浮层、进度条、
    * 弹幕密度条全部照常工作，不需要另写一套 UI。
@@ -6769,6 +6876,11 @@ onMounted(() => {
       currentTime.value = st.t
       duration.value = st.d
       playing.value = st.p
+      // 片源分辨率只报一次（面板用）；后续同一尺寸不再 emit
+      if (st.sw > 1 && st.sh > 1 && (st.sw !== nativeSize.w || st.sh !== nativeSize.h)) {
+        nativeSize = { w: st.sw, h: st.sh }
+        emit('native-size', nativeSize)
+      }
       if (rate.value !== 1) iosNativeCmd('rate', rate.value)
     }, 200)
     /*
@@ -6794,6 +6906,13 @@ onMounted(() => {
      */
     ;(window as unknown as { __meowVlcEnded?: () => void }).__meowVlcEnded = () => {
       onMediaEnded()
+    }
+    /*
+     * 原生播放卡死（2026-11-28）：VLC 侧 12 秒位置不前进 → 当成"这条线路死了"，
+     * 走与 web 看门狗完全相同的失败链（换线 / 转码 / 重试），不再只能干等。
+     */
+    ;(window as unknown as { __meowVlcStalled?: () => void }).__meowVlcStalled = () => {
+      failPlay('原生播放 12 秒没有进展（这条线路可能已失效），正在尝试换线', 'stall')
     }
     /*
      * 把「视频所在容器链」的背景清成透明（2026-11-27 真机实报「只有声音、
@@ -7374,6 +7493,10 @@ onBeforeUnmount(() => {
     if (w.__meowIosActive === iosActiveBridge) w.__meowIosActive = undefined
   }
   window.removeEventListener('meow:webview-resume', onWebviewResume)
+  if (mediaSessionTimer) {
+    window.clearInterval(mediaSessionTimer)
+    mediaSessionTimer = 0
+  }
   if (iosNative) {
     // 卸载时摘掉原生回调：否则原生再调它就会碰到已销毁的组件状态
     const w = window as unknown as {
@@ -7382,6 +7505,7 @@ onBeforeUnmount(() => {
     }
     delete w.__meowVlcShowBar
     delete w.__meowVlcEnded
+    delete (window as unknown as { __meowVlcStalled?: () => void }).__meowVlcStalled
   }
   const w = window as unknown as { __meowPauseMedia?: () => void }
   if (w.__meowPauseMedia === pauseMediaOnHide) w.__meowPauseMedia = undefined

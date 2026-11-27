@@ -484,6 +484,9 @@ export interface IosNativeState {
   vy: number
   vw: number
   vh: number
+  /** 片源分辨率（VLC 的 videoSize；0 = 还没拿到）——媒体信息面板用 */
+  sw: number
+  sh: number
 }
 
 /**
@@ -505,6 +508,8 @@ export function readIosNativeState(): IosNativeState | null {
       vy: Number(raw.vy) || 0,
       vw: Number(raw.vw) || 0,
       vh: Number(raw.vh) || 0,
+      sw: Number(raw.sw) || 0,
+      sh: Number(raw.sh) || 0,
     }
   } catch {
     return null

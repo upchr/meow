@@ -3109,6 +3109,17 @@ function syncNativeTracks() {
   }
 }
 
+/**
+ * 端内原生播放报来的片源分辨率（2026-11-28）。
+ *
+ * <p>VLC 能稳定给的只有 videoSize；编码名各版本接口不一（tracksInformation
+ * 有/没有、字段也变过），所以面板先显示「原生 1920×1080」，编码留空。
+ */
+function onNativeSize(s: { w: number; h: number }) {
+  if (!(s.w > 1 && s.h > 1)) return
+  mediaInfo.value = { via: 'native', srcWidth: s.w, srcHeight: s.h }
+}
+
 /** 同片里第一条非 4K 线路（用于"自动降 1080p"） */
 function lowerLineName(): string {
   const ls = (lines.value || []).filter(
@@ -4367,6 +4378,7 @@ onBeforeUnmount(() => {
       :casting="!!castSession"
       :cache-state="cacheState"
       :cache-percent="cachePercent"
+      @native-size="onNativeSize"
       @loaded="applyResume"
       @seek-applied="refreshSeekAt = 0"
       @seek-beyond="onSeekBeyond"

@@ -1,3 +1,4 @@
+import MediaPlayer
 import UIKit
 import WebKit
 import MobileVLCKit
@@ -134,7 +135,9 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         } else {
             buildControls()
         }
+        setupRemoteCommands()
         prepareMedia()
+        updateNowPlaying()
         attachDanmaku()
         startTicking()
         startProgressLoop()
@@ -271,8 +274,13 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         let total = (durationMs() ?? 0) / 1000
         let playing = player.isPlaying
         let r = videoRect()
+        // sw/sh = 片源分辨率（VLC videoSize）：媒体信息面板显示「原生 1920×1080」
+        let vs = player.videoSize
+        let sw = vs.width > 1 ? Double(vs.width) : 0
+        let sh = vs.height > 1 ? Double(vs.height) : 0
         let js = "window.__meowNativeState={t:\(cur),d:\(total),p:\(playing),"
-            + "vx:\(r.origin.x),vy:\(r.origin.y),vw:\(r.width),vh:\(r.height)}"
+            + "vx:\(r.origin.x),vy:\(r.origin.y),vw:\(r.width),vh:\(r.height),"
+            + "sw:\(sw),sh:\(sh)}"
         w.evaluateJavaScript(js, completionHandler: nil)
     }
 
@@ -473,6 +481,9 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         danmakuXml = nil
         danmaku.setItems([])
         endedNotified = false
+        lastMoveMs = -1
+        lastMoveAt = Date()
+        stalledNotified = false
         let media = makeMedia(u, sub: pendingSubUrl)
         player.media = media
         player.play()
@@ -511,6 +522,94 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         guard didStart, !didFinish, !userPaused, !player.isPlaying else { return }
         LaunchLog.write("[vlc] resume after background")
         player.play()
+    }
+
+    // MARK: - 卡死自愈 / 锁屏
+
+    /**
+     * 位置 12 秒没有前进 → 通知控制层走与网页看门狗**完全相同**的失败链
+     * （换线 / 转码 / 重试），而不是让用户在黑屏前干等。
+     *
+     * <p>判据用"期望在播"（`didStart && readyOnce && !userPaused`）而不是
+     * `player.isPlaying`：VLC 在 buffering 时 isPlaying 可能仍是 true，
+     * 也可能已经翻 false —— 用播放器自己的状态会把"永久缓冲"漏掉。
+     */
+    private func checkStall(_ curMs: Double) {
+        guard didStart, readyOnce, !didFinish, !userPaused, !seeking else {
+            lastMoveMs = curMs
+            lastMoveAt = Date()
+            return
+        }
+        if abs(curMs - lastMoveMs) >= 500 {
+            lastMoveMs = curMs
+            lastMoveAt = Date()
+            if stalledNotified { stalledNotified = false }
+            return
+        }
+        guard !stalledNotified, Date().timeIntervalSince(lastMoveAt) > 12 else { return }
+        stalledNotified = true
+        LaunchLog.write("[vlc] stalled 12s at \(Int(curMs / 1000))s")
+        controlWebView?.evaluateJavaScript(
+            "window.__meowVlcStalled&&window.__meowVlcStalled()", completionHandler: nil)
+    }
+
+    /// 锁屏/控制中心的标题与进度（原生播放时由壳负责，网页的 Media Session 不走这条）
+    private func updateNowPlaying() {
+        guard !didFinish else { return }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: titleText.isEmpty ? "猫窝" : titleText,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(player.time.intValue) / 1000,
+            MPNowPlayingInfoPropertyPlaybackRate: player.isPlaying ? 1.0 : 0.0,
+        ]
+        if let d = durationMs(), d > 0 { info[MPMediaItemPropertyPlaybackDuration] = d / 1000 }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func clearNowPlaying() {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        let cc = MPRemoteCommandCenter.shared()
+        let commands: [MPRemoteCommand] = [cc.playCommand, cc.pauseCommand,
+                                           cc.togglePlayPauseCommand, cc.changePlaybackPositionCommand]
+        for c in commands { c.removeTarget(nil) }
+    }
+
+    /// 锁屏/耳机线控的播放、暂停、拖进度
+    private func setupRemoteCommands() {
+        let cc = MPRemoteCommandCenter.shared()
+        cc.playCommand.addTarget { [weak self] _ in
+            guard let self, !self.didFinish else { return .commandFailed }
+            self.userPaused = false
+            self.player.play()
+            AudioSession.setPlaying(true)
+            return .success
+        }
+        cc.pauseCommand.addTarget { [weak self] _ in
+            guard let self, !self.didFinish else { return .commandFailed }
+            self.userPaused = true
+            self.player.pause()
+            AudioSession.setPlaying(false)
+            return .success
+        }
+        cc.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self, !self.didFinish else { return .commandFailed }
+            if self.player.isPlaying {
+                self.userPaused = true
+                self.player.pause()
+                AudioSession.setPlaying(false)
+            } else {
+                self.userPaused = false
+                self.player.play()
+                AudioSession.setPlaying(true)
+            }
+            return .success
+        }
+        cc.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, !self.didFinish,
+                  let ev = event as? MPChangePlaybackPositionCommandEvent,
+                  let total = self.durationMs(), total > 0 else { return .commandFailed }
+            self.player.position = Float(min(1, max(0, ev.positionTime * 1000 / total)))
+            return .success
+        }
     }
 
     /// 睡眠定时到点：暂停原生播放（PowerTimer 的 JS 那条路打不到控制层 WebView）
@@ -724,6 +823,10 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
     private var pendingSubUrl = ""
     /// 自然播完只通知一次（通知后停在同一帧，等网页决定连播/停）
     private var endedNotified = false
+    /// 卡死检测：位置多久没前进就判死（与 web 的 12s stall 看门狗同口径）
+    private var lastMoveMs: Double = -1
+    private var lastMoveAt = Date()
+    private var stalledNotified = false
 
     private func applyPendingSeekIfNeeded() {
         guard pendingSeekMs > 0 else { return }
@@ -927,6 +1030,9 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
         danmaku.setViewport(videoRect())
         danmaku.tick(positionMs: Int(cur), playing: player.isPlaying,
                      rate: Double(player.rate))
+        // 卡死检测（12s 位置不动 → 通知网页走换线/转码链）与锁屏进度（1s 一次）
+        checkStall(cur)
+        if tickCount % 4 == 0 { updateNowPlaying() }
         /*
          * 状态推送降频（2026-11-27 真机实报「弹幕很卡顿」）：
          * evaluateJavaScript 是主线程工作，4Hz 一直跑会和弹幕合成抢 CPU。
@@ -1131,6 +1237,8 @@ final class NativeVlcPlayer: UIViewController, WKScriptMessageHandler, WKNavigat
             self, name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.removeObserver(
             self, name: UIApplication.didEnterBackgroundNotification, object: nil)
+
+        clearNowPlaying()
 
         // 竖屏还给 web（web 播放页是竖屏优先，恢复横屏意图由它自己决定）
         ShellOrientation.apply("portrait")

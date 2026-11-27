@@ -511,6 +511,43 @@ describe('控制层：切集 / 静音 / 弹幕（第三轮）', () => {
     expect(DANMAKU).toContain('weight: .semibold')
   })
 
+  it('卡死自愈：原生 12s 位置不动 → 通知控制层走换线/转码链', () => {
+    expect(PLAYER).toContain('private func checkStall(')
+    expect(PLAYER).toContain('Date().timeIntervalSince(lastMoveAt) > 12')
+    expect(PLAYER).toContain('__meowVlcStalled')
+    expect(LAYER).toContain('__meowVlcStalled')
+    expect(LAYER).toMatch(/__meowVlcStalled[\s\S]{0,160}failPlay\(/)
+  })
+
+  it('媒体信息：原生上报片源分辨率（VLC videoSize），面板显示「原生 WxH」', () => {
+    expect(PLAYER).toContain('sw:\\(sw),sh:\\(sh)')
+    expect(BRIDGE).toContain('sw: Number(raw.sw) || 0')
+    expect(LAYER).toContain("emit('native-size'")
+    expect(PLAY).toContain('function onNativeSize(')
+    expect(PLAY).toContain("via: 'native', srcWidth: s.w, srcHeight: s.h")
+  })
+
+  it('锁屏媒体信息：原生 MPNowPlayingInfoCenter + 远程控制；网页走 Media Session', () => {
+    expect(PLAYER).toContain('MPNowPlayingInfoCenter.default().nowPlayingInfo')
+    expect(PLAYER).toContain('MPRemoteCommandCenter.shared()')
+    expect(PLAYER).toContain('changePlaybackPositionCommand')
+    expect(PLAYER).toContain('private func clearNowPlaying()')
+    expect(LAYER).toContain('function setupMediaSession()')
+    expect(LAYER).toContain('mediaSessionApi()')
+    expect(LAYER).toContain('setPositionState')
+    // 原生模式跳过网页 Media Session（两边会互相覆盖）
+    {
+      const at = LAYER.indexOf('function setupMediaSession()')
+      expect(at).toBeGreaterThan(0)
+      expect(LAYER.slice(at, at + 160)).toContain('if (iosNative) return')
+    }
+  })
+
+  it('PiP：iOS 走 webkitSetPresentationMode（原来只看 pictureInPictureEnabled 恒 false）', () => {
+    expect(LAYER).toContain('webkitSupportsPresentationMode')
+    expect(LAYER).toContain('webkitSetPresentationMode')
+  })
+
   it('睡眠定时在原生播放时也能停（控制层补 powerTimer 桥 + 直接暂停）', () => {
     // 控制层是独立 WebView：不补 powerTimer 的话「更多 → 定时」设了没人收
     expect(PLAYER).toContain("op:'powerTimer'")
