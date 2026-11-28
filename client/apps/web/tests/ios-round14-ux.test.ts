@@ -17,8 +17,12 @@ const homeCss = read(join(WEB, 'src', 'styles', 'tokens.css'))
 const live = read(join(WEB, 'src', 'views', 'LiveView.vue'))
 
 describe('直播底栏入口（非 TV）', () => {
-  it('手机横屏也显示底栏（进页面先有控制栏，频道按钮开面板）', () => {
-    expect(live).toContain("v-if=\"(!landscape || !isTvEnv()) && !showGuide\"")
+  it('手机横屏也有控制栏，频道按钮在控制栏里开面板', () => {
+    // 2026-11-28：底栏并入 meow-ctrl-bar（与点播播放器同构），点画面 = 显隐，
+    // 「频道」按钮是打开分类-台面板的唯一入口；横竖屏都有（判据不再看方向）。
+    expect(live).toContain('class="meow-ctrl-bar')
+    expect(live).toContain('@click.stop="openGuide"')
+    expect(live).toContain('title="频道列表"')
   })
 })
 

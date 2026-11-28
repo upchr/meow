@@ -119,14 +119,15 @@ describe('直播播放页：频道面板导航（页面接管 + 列内夹停）'
     )
   })
 
-  it('面板打开时竖屏底栏不渲染（底栏按钮会让 tv-nav 抢走方向键）', () => {
+  it('面板打开时控制栏不渲染（底栏按钮会让 tv-nav 抢走方向键）', () => {
     // 横屏本来就没有底栏；竖屏底栏一直在，它不是 FOCUSABLE 之外的东西——
     // 只要它在，tv-nav 就有候选元素、会画焦点框，然后 `if (!markedEl())`
     // 不成立、键不再派发给页面 → 面板按键全失效。
-    // 2026-11-26：手机横屏也要有底栏（进页面先显示控制栏，频道按钮开面板）；
-    // TV 横屏仍然不给底栏 —— 判据从"只看横竖"改成"横屏且非 TV"。
-    expect(src, '底栏 v-if 必须排除面板打开态，并只对非 TV 横屏显示').toMatch(
-      /v-if="\(!landscape \|\| !isTvEnv\(\)\) && !showGuide"/,
+    // 2026-11-28：底栏并入 meow-ctrl-bar（点画面 = showCtrl 显隐），面板
+    // 打开态从旧 v-if 条件里挪到整条控制栏的 v-if="!showGuide"。
+    expect(src, '控制栏 v-if 必须排除面板打开态').toContain('v-if="!showGuide"')
+    expect(src, '控制栏显隐必须由 showCtrl 驱动（点画面呼出）').toContain(
+      `:class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"`,
     )
   })
 

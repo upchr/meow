@@ -124,8 +124,13 @@ describe('后端路径与跨源', () => {
   })
 
   it('TLS 主机名校验没有被自定义 verifier 关掉', () => {
-    // 三处"调默认 verifier 然后 return true"都是在关校验
+    // "调默认 verifier 然后 return true"都是在关校验
     expect(api).not.toMatch(/getDefaultHostnameVerifier\(\)[\s\S]{0,120}return true/)
-    expect(api).toContain('setEndpointIdentificationAlgorithm("HTTPS")')
+    // Android 9 起 endpointIdentificationAlgorithm 的 peerHost 是连接 IP，
+    // 与证书 SAN 必然不匹配（No subjectAltNames match）→ 主机名校验改为
+    // 显式 verifierFor：捕获原域名 + certMatchesHost（RFC 2818 SAN 规则）。
+    // 门禁锁「SAN 匹配逻辑还在」，不再锁那行算法设置。
+    expect(api).toContain('static javax.net.ssl.HostnameVerifier verifierFor(')
+    expect(api).toContain('private static boolean certMatchesHost(')
   })
 })
