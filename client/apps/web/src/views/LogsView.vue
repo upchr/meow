@@ -24,6 +24,7 @@ import {
 } from '@/api/logs'
 import { confirmDialog } from '@/composables/useConfirm'
 import { uaText } from '@/compat/ua'
+import PillSelect from '@/components/common/PillSelect.vue'
 
 const route = useRoute()
 const items = ref<LogItem[]>([])
@@ -106,6 +107,18 @@ const tags = computed(() => {
   for (const it of items.value) if (it.tag) s.add(it.tag)
   return [...s].sort()
 })
+
+/**
+ * 模块下拉的选项。
+ *
+ * <p>用自绘胶囊（PillSelect）而不是原生 `<select>`：原生 select 在 TV 壳里
+ * 不可聚焦（没有系统弹窗，方向键进不去），遥控器用户没法切模块。
+ * 样式与顶栏「站点」下拉一致（选中项 accent 底色 + 勾）。
+ */
+const tagOptions = computed(() => [
+  { value: '', label: '全部模块' },
+  ...tags.value.map((t) => ({ value: t, label: t })),
+])
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
@@ -478,13 +491,7 @@ onBeforeUnmount(() => {
       >
         {{ t === 'all' ? '全部' : t === 'net' ? `网络(${counts.net})` : t.toUpperCase() }}
       </button>
-      <select
-        v-model="tagFilter"
-        class="rounded-md border border-line bg-field px-2 py-1 text-[11px] text-ink-2 outline-none"
-      >
-        <option value="">全部模块</option>
-        <option v-for="g in tags" :key="g" :value="g">{{ g }}</option>
-      </select>
+      <PillSelect v-model="tagFilter" :options="tagOptions" aria-label="按模块筛选" />
       <input
         v-model="keyword"
         class="min-w-0 flex-1 rounded-md border border-line bg-field px-2 py-1 text-[11px] text-ink outline-none focus:border-accent"

@@ -1767,6 +1767,11 @@ export interface ConfigImportResult {
   depot?: Array<{ url?: string; name?: string }>
   /** 当前生效的仓（多仓切换后用来打「当前」标记） */
   active?: string
+  /**
+   * 这次导入之后，缓存里那份多仓列表还代表不代表当前配置。
+   * true = 换成了别的单仓地址，前端不该再把仓列表摆出来。
+   */
+  detached?: boolean
   url?: string
   msg?: string
   diff?: ConfigImportDiff
@@ -1855,6 +1860,11 @@ export interface ConfigDepotResult {
   probedAt?: number
   /** 缓存超过 24h（列表还在，但建议刷新） */
   stale?: boolean
+  /**
+   * 缓存里的仓列表已经不代表当前配置（用户后来导入了别的源）。
+   * 前端据此不摆出仓列表；重新探测会清掉它。
+   */
+  detached?: boolean
   /** GET 时：是否命中本地缓存 */
   cached?: boolean
 }
@@ -2012,8 +2022,39 @@ export async function getCachedDepot(): Promise<ConfigDepotResult> {
   return request<ConfigDepotResult>('/api/config/depot', { timeout: 10_000 })
 }
 
-/** 查导入前的配置快照。 */
-export async function getConfigBackup(): Promise<{ backup: ConfigBackupInfo }> {
+/** 一条导入历史：哪个地址、什么时候、导进来几站。 */
+export interface ConfigHistoryEntry {
+  url: string
+  /** 导入时间（毫秒） */
+  at?: number
+  /** 当次可用站数 */
+  sites?: number
+  /** 当次配置里的总站数 */
+  total?: number
+  /** merge / replace */
+  mode?: string
+}
+
+/**
+ * 读导入历史（最近成功导入过的配置地址，最多 20 条）。
+ *
+ * 为什么要有：输入框里只有"最后粘贴的那一条"，多仓切仓/换源之后想回到
+ * 上一条地址就得重新找。历史由后端落盘（config.import.history.json），
+ * 重启后仍在，不依赖本机的 localStorage。
+ */
+export async function getConfigHistory(): Promise<{ entries: ConfigHistoryEntry[] }> {
+  try {
+    const r = await request<{ entries?: ConfigHistoryEntry[] }>('/api/config/history', {
+      timeout: 10_000,
+    })
+    return { entries: r.entries || [] }
+  } catch {
+    // 老后端没有这个端点：当成"没有历史"，不影响导入
+    return { entries: [] }
+  }
+}
+
+/** 查导入前的配置快照。 */export async function getConfigBackup(): Promise<{ backup: ConfigBackupInfo }> {
   try {
     return await request<{ backup: ConfigBackupInfo }>('/api/config/backup', { timeout: 15_000 })
   } catch {

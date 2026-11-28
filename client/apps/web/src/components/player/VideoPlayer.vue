@@ -1644,6 +1644,15 @@ const loadStartedAt = ref(0)
 const firstFrameMs = ref<number | null>(null)
 /** 最近一次 hls 错误（非致命的也记，便于看抖动） */
 const lastHlsError = ref('')
+/**
+ * 最近这次错误是不是致命的。
+ *
+ * <p>为什么单独存：hls.js 的非致命错误（bufferSeekOverHole / bufferStalledError /
+ * fragLoadError 重试…）是**它自己会处理**的抖动，面板里用红字「错误」展示
+ * 会被读成"播放出故障了"（2026-11-28 用户截图问「那个红色提示什么意思」）。
+ * 红字只留给真把播放打断的那一次。
+ */
+const lastHlsFatal = ref(false)
 
 /** 带宽估算的展示格式（入参单位 kbps） */
 function fmtBandwidth(kbps: number): string {
@@ -1726,6 +1735,8 @@ function collectDebug() {
           bandwidthEstimate: h.bandwidthEstimate ? Math.round(h.bandwidthEstimate / 1000) : null,
           frags: fragLog.value.slice(-8),
           lastError: lastHlsError.value || null,
+          // 致命与否决定面板里的颜色与措辞：非致命是"抖动"，不该显示成红色故障
+          lastFatal: lastHlsFatal.value,
         }
       : null,
     // ---- 业务层 ----
@@ -1948,6 +1959,8 @@ function tryNudgeOverHole(): boolean {
     /* 引擎销毁中 */
   }
   lastHlsError.value = `跳过缓冲空洞 ${gap.toFixed(1)}s（${holeNudges}/3）`
+  // 我们自己的补洞动作：不是故障，面板里按告警展示
+  lastHlsFatal.value = false
   reportPlayerEvent({
     kind: 'buffer_hole',
     site: props.site,
@@ -2296,6 +2309,7 @@ function setupSource(url: string) {
         `${data.details}` +
         (data.response?.code ? ` (${data.response.code})` : '') +
         (data.fatal ? ' [fatal]' : '')
+      lastHlsFatal.value = !!data.fatal
       /*
        * 猜错方向了：这个地址不是清单（MP4/TS 等单文件），hls.js 解析不了。
        *
@@ -8619,8 +8633,18 @@ defineExpose({
               class="ml-1"
             >{{ f.ms }}ms</span>
           </div>
-          <div v-if="debugSnapshot.hls.lastError" class="mt-0.5 text-hot">
-            错误 {{ debugSnapshot.hls.lastError }}
+          <!--
+            红字只留给致命错误。非致命（bufferSeekOverHole 这类）hls.js 自己
+            就处理了，写成「告警」并能看到 details 就够了 —— 用红字会让人以为
+            播放坏了（2026-11-28 用户截图问这条红字是什么意思）。
+          -->
+          <div
+            v-if="debugSnapshot.hls.lastError"
+            class="mt-0.5"
+            :class="debugSnapshot.hls.lastFatal ? 'text-hot' : 'text-warn'"
+          >
+            {{ debugSnapshot.hls.lastFatal ? '致命错误' : '最近告警（已自愈）' }}
+            {{ debugSnapshot.hls.lastError }}
           </div>
         </div>
 

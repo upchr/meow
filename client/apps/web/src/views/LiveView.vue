@@ -1373,6 +1373,39 @@ function openGuide() {
   })
 }
 
+/**
+ * 鼠标/触摸点分类。
+ *
+ * <p>点**当前分类**时不再把右列光标重置到第一个台：用户多半只是"看看这类里
+ * 有什么"，一重置就把当前台的高亮与滚动位置丢了（2026-11-28 心智审计）。
+ */
+function pickGuideGroup(i: number) {
+  if (i !== guideGroup.value) {
+    guideGroup.value = i
+    guideChannel.value = 0
+  }
+  guideColumn.value = 'channel'
+}
+
+/**
+ * 鼠标/触摸点台。
+ *
+ * <p>点**正在播的那个台**只关面板，不重开流 —— 点击的心智是"选中并退出"，
+ * 不是"重播"；重开会黑屏缓冲一次（2026-11-28 心智审计）。
+ * 真需要重连时用底栏的「重播」。
+ */
+async function pickGuideChannel(i: number) {
+  guideChannel.value = i
+  const ch = guideChannels.value[i]
+  const sameGroup = !groups.value[guideGroup.value]
+    || keyOf(groups.value[guideGroup.value]) === activeKey.value
+  if (ch && sameGroup && current.value && ch.name === current.value.name) {
+    showGuide.value = false
+    return
+  }
+  await guideOk()
+}
+
 /** 光标在右列上移/下移：**到边界停住**（不环绕，也不跳列） */
 function guideMoveChannel(dir: number) {
   const n = guideChannels.value.length
@@ -1577,13 +1610,25 @@ function onStagePointerMove(e: PointerEvent) {
       swipe.kind === 'volume'
         ? (systemVolume() ?? Math.round((video.value?.volume ?? 1) * 100))
         : (systemBrightness() ?? 50)
+    /*
+     * 每次手势都从"当前值"重新起算。
+     * ★ 不重置会踩：判断"值没变就 return"用的是上一手的值，而有些端
+     *   systemVolume() 拿不到、退回元素音量（恒为 1=100%），连划两下都
+     *   算出 100 → 第二下开始既不调音量也不出提示（2026-11-28 .76 实测）。
+     */
+    swipe.value = swipe.baseValue
     // 这一下之后浏览器可能补发 click，不能当成"暂停"
     suppressNextClick()
   }
 
   const delta = ((swipe.startY - e.clientY) / swipeRange()) * 100
   const next = Math.max(0, Math.min(100, Math.round(swipe.baseValue + delta)))
-  if (next === swipe.value) return
+  if (next === swipe.value) {
+    // 已经顶到 0 / 100：不重复写值，但手势后仍要给一次提示，
+    // 否则用户以为"滑了没反应"（值不变 ≠ 手势没生效）
+    if (!swipeHint.value) applySwipe(swipe.kind as 'volume' | 'brightness', next)
+    return
+  }
   swipe.value = next
   applySwipe(swipe.kind as 'volume' | 'brightness', next)
   e.preventDefault()
@@ -1885,24 +1930,40 @@ function onStageClick() {
   clearTimeout(clickTimer)
   /*
    * 移动端还没全屏：单击画面 = 直接进全屏横屏（2026-11-25 用户要求）。
-   * 直播暂停本来意义就有限（暂停就追不上了），主流直播 App 也是点画面进全屏；
-   * TV 壳保持原语义（横屏单击呼出「分类-台」面板，那是遥控器唯一的 UI 入口）。
+   * 直播暂停本来意义就有限（暂停就追不上了），主流直播 App 也是点画面进全屏。
    */
   if (isTouch.value && !isTvEnv() && !fullscreen.value && !pseudoFs.value) {
     clickTimer = window.setTimeout(() => void toggleFullscreen(), 220)
     return
   }
   /*
-   * 单击语义按形态分（用户口径 2026-11-06：横屏点击应该是呼出导航栏）：
-   *   横屏 TV → 单击 = 呼出「分类-台」面板（底栏不存在，这是画面上唯一的
-   *             UI 入口，与 OK 键同语义；暂停在直播里本就意义有限——
-   *             直播流暂停后追不上）。
-   *   竖屏手机（已全屏） → 单击 = 播放/暂停（触屏习惯，与点播一致）。
+   * 单击语义按形态分：
+   *   横屏 + 有底栏（web / PC） → 切换底栏显隐。
+   *   横屏 TV（无底栏） → 播放/暂停。
+   *   竖屏手机（已全屏） → 播放/暂停（触屏习惯，与点播一致）。
    * 双击在两种形态下都是切全屏（220ms 判定窗共用）。
+   *
+   * ★ 2026-11-28 用户口径：点屏幕**不再**呼出「分类-台」—— 那个面板只由
+   *   底栏的频道按钮打开。原来横屏点一下就弹面板，底栏可见时更是"想收底栏
+   *   却被弹出一个大面板"。遥控器 OK 键那条路径（onKeydown）保留，不经过这里。
    */
   clickTimer = window.setTimeout(() => {
-    if (landscape.value) openGuide()
-    else togglePlay()
+    /*
+     * 横屏（电视 / 投屏 / 手机横屏）→ 切换底栏显隐。
+     *
+     * ★ 2026-11-28 回归修正：先前把横屏 TV 改成"播放/暂停"，用户点一下画面
+     *   直播就停了（"点击屏幕就暂停了。。不应该呼出控制栏？"）。直播暂停本就没有
+     *   意义，点画面的唯一预期是**呼出/收起控制栏**。底栏因此在横屏也渲染
+     *   （见模板注释），否则唤出等于没反应。
+     *
+     * 竖屏手机保留"点一下暂停"（触屏肌肉记忆，与点播一致）。
+     */
+    if (landscape.value) {
+      if (showCtrl.value) hideCtrl()
+      else wake()
+      return
+    }
+    togglePlay()
   }, 220)
 }
 
@@ -2045,6 +2106,16 @@ watch(pseudoFs, (v) => {
 const CTRL_HIDE_MS = 5000
 /** 最后一次用户操作的时间戳（毫秒），控制栏续期判据用 */
 let lastUserActionAt = 0
+
+/**
+ * 立刻收起底栏（点画面切换显隐用）。
+ *
+ * <p>不走 5 秒静默计时：用户是**主动**要收起，等到计时到点才收等于没响应。
+ */
+function hideCtrl() {
+  clearTimeout(hideTimer)
+  showCtrl.value = false
+}
 
 function wake() {
   const wasHidden = !showCtrl.value
@@ -2809,9 +2880,17 @@ onBeforeUnmount(() => {
         失败也不需要降级布局 —— 页面本身就是满屏的，pseudoFs 只剩
         "通知 App 藏 AI 悬浮球"一个职责。
       -->
+      <!--
+        舞台必须 `touch-action: none`（与点播 VideoPlayer 同款）。
+        ★ 没有它时竖滑调音量/亮度是"看运气"的：内核会把按下当成页面滚动，
+          派发 pointercancel，pointermove 被取消，手势永远起不来
+          （2026-11-28 .76 实测：同一条 adb 滑动手势，有时出音量条、有时不出；
+          `guide-resize` 早就因为同一个原因加过同一条规则）。
+      -->
       <div
         v-if="current"
         ref="stage"
+        style="touch-action: none"
         class="group absolute inset-0 overflow-hidden bg-black"
         @mousemove="wake"
         @click="onStageClick"
@@ -2865,6 +2944,7 @@ onBeforeUnmount(() => {
           -->
           <div
             v-if="swipeHint"
+            data-swipe-hint
             class="pointer-events-none absolute left-1/2 top-1/2 z-30 -translate-x-1/2 -translate-y-1/2"
           >
             <div class="flex flex-col items-center gap-2 rounded-xl bg-black/75 px-5 py-4 text-white shadow-2xl backdrop-blur">
@@ -2923,10 +3003,21 @@ onBeforeUnmount(() => {
             播放信息调试面板（D 键 / 底栏「信息」）。
             内核层 / HLS 层 / 业务层三层摊开，"黑屏卡住"才能判断该查哪一层；
             同时挂 window.__playerDebug 供 MCP 直接断言，不必截图。
+
+            ★ 面板挂在舞台上（舞台上有竖滑调音量/亮度的 pointer 处理器），
+              事件会冒泡上去 —— 实测在面板里上下滑，音量跟着变（用户反馈）。
+              「分类-台」面板不穿透是因为它是舞台的兄弟节点；这里保持 DOM 位置
+              （要覆盖在画面上），改用 `.stop` 把交互全部截住，语义对齐。
           -->
           <div
             v-if="debugOn && debugSnapshot"
+            data-debug-panel
             class="absolute inset-y-0 right-0 z-50 w-[22rem] max-w-full overflow-y-auto bg-black/88 p-3 font-mono text-[11px] leading-relaxed text-white/85 backdrop-blur"
+            @click.stop
+            @dblclick.stop
+            @pointerdown.stop
+            @pointermove.stop
+            @wheel.stop
           >
             <div class="mb-2 flex items-center justify-between">
               <span class="text-xs font-semibold text-white">播放信息</span>
@@ -2978,18 +3069,20 @@ onBeforeUnmount(() => {
           </div>
 
           <!--
-            底部控制栏 —— **只在竖屏（手机形态）渲染**。
-            ★ 横屏 TV（电视/投影）不渲染底栏（v-if 连 DOM 都没有，tv-nav 的
-              候选集里彻底消失）：↑↓ 换台、←→ 切线路、OK 呼出面板就是
-              全部操作。底栏若存在，唤出后的 5 秒窗口内方向键会被 tv-nav
-              抢去做焦点导航，换台失灵（用户定调：横屏设备无需要底栏）。
+            底部控制栏 —— 竖屏与横屏都渲染。
+            ★ 2026-11-28 回归修正：原来横屏 TV 不渲染（`!landscape || !isTvEnv()`），
+              点画面"唤出控制栏"就没有任何可见反馈，只能被迫改成暂停（用户：
+              「点击屏幕就暂停了。。不应该呼出控制栏？」）。底栏现在横屏也有，
+              点画面 = 显隐它；「频道」按钮是打开「分类-台」面板的唯一入口。
+            ★ 方向键不会被底栏抢走：播放中页面自己持有 `__meowTvKeyOwner`
+              （见 watch(current)），tv-nav 不接管，↑↓ 换台照旧。
             ★ 结构与视觉对齐点播播放器（VideoPlayer 的 meow-ctrl-bar）：
               同样的渐变背景、同样的按钮尺寸（h-9 w-9 圆形）、同样的
               hover 反馈（hover:bg-white/10）、同样的 data-tv-primary 标记
               （TV 焦点落点）。直播没有进度条/音量/倍速，其余按直播语义排。
           -->
           <div
-            v-if="(!landscape || !isTvEnv()) && !showGuide"
+            v-if="!showGuide"
             class="meow-ctrl-bar absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3 pb-[calc(0.625rem+var(--tabbar-clear))] pt-12 sm:px-5 sm:pb-4 sm:pt-14"
             :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
             data-ctrl-root
@@ -3273,7 +3366,7 @@ onBeforeUnmount(() => {
                   keyOf(g) === activeKey ? 'bg-accent text-on-accent' : 'text-white/80 hover:bg-white/10',
                   guideColumn === 'group' && gi === guideGroup ? 'guide-cursor' : '',
                 ]"
-                @click="guideGroup = gi; guideChannel = 0; guideColumn = 'channel'"
+                @click="pickGuideGroup(gi)"
               >
                 <span class="truncate" :title="g.group">{{ g.group }}</span>
                 <span class="shrink-0 text-[10px] opacity-70">{{ uniqueCount(g) }}</span>
@@ -3310,7 +3403,7 @@ onBeforeUnmount(() => {
                   guideColumn === 'channel' && i === guideChannel ? 'guide-cursor' : '',
                 ]"
                 :title="isLiveBad(ch.name) ? '上次播放失败（24 小时内连续 2 次）' : ch.name"
-                @click="guideChannel = i; void guideOk()"
+                @click="pickGuideChannel(i)"
               >
                 <span class="w-9 shrink-0 text-[10px] opacity-60">{{ i + 1 }}</span>
                 <span class="truncate" :title="ch.name">{{ ch.name }}</span>

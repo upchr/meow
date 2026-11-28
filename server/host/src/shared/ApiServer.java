@@ -1745,6 +1745,17 @@ public class ApiServer {
                 return;
             }
             /*
+             * 导入历史（最近成功导入过的配置地址）。
+             *
+             * <p>为什么落盘：输入框里只有"最后粘贴的那一条"，多仓切仓/换源之后
+             * 想回到上一条地址就得重新找。历史文件重启后仍在，前端用一个
+             * 历史按钮回填，不必再翻聊天记录。
+             */
+            if ("/api/config/history".equals(path)) {
+                sendJson(ex, 200, importHistoryJson());
+                return;
+            }
+            /*
              * 配置备份：查 / 恢复。与 /api/config/import 同一族。
              *
              * DELETE = 丢弃备份（用户确认新配置没问题了）；
@@ -5706,8 +5717,17 @@ public class ApiServer {
             return;
         }
         // 解析目标由调用方给，和 /api/proxy/stream 一样必须挡住内网，
-        // 否则这个端点就成了"能读内网 JSON"的探测口
-        if (!core.UrlSafety.isSafeHttpUrl(webUrl)) {
+        // 否则这个端点就成了"能读内网 JSON"的探测口。
+        //
+        // ★ 但**只有真正的 http(s) 地址**才校验：站点返回的常常是**加密播放串**
+        //   （咕噜的 `xfy-…`、部分站的 `X-…`），它不是 URL，也不会被我们直接
+        //   请求 —— tryOneParse 只是把它拼到解析器接口后面当参数发出去。
+        //   误拦它等于所有加密线路都播不了（实测 2026-11-28：Gulu 全站播放
+        //   一律 403 `url not allowed`，前端表现为"点播放进不去"）。
+        //   内网 URL 仍然拒：那种输入会进入 tryPageSniff 的真实抓取路径。
+        String lowerUrl = webUrl.toLowerCase(java.util.Locale.ROOT);
+        boolean looksLikeHttpUrl = lowerUrl.startsWith("http://") || lowerUrl.startsWith("https://");
+        if (looksLikeHttpUrl && !core.UrlSafety.isSafeHttpUrl(webUrl)) {
             sendJson(ex, 403, "{\"code\":-1,\"msg\":\"url not allowed\"}");
             return;
         }
@@ -11605,7 +11625,34 @@ public class ApiServer {
             c.setRequestProperty("User-Agent", ua);
             c.setRequestProperty("Accept", "*/*");
             if (referer != null) c.setRequestProperty("Referer", referer);
-            if (c.getResponseCode() >= 400) {
+            int code;
+            try {
+                code = c.getResponseCode();
+            } catch (javax.net.ssl.SSLException sslErr) {
+                /*
+                 * ★ DoH 直连节点的证书链老 Android 构建不出来时
+                 * （Let's Encrypt 新根 YR2 → Root YR → 跨签名 X1），
+                 * 握手阶段直接抛异常 —— 此时一个字节都没读到，回退最安全。
+                 *
+                 * 退回域名直连再试一次：让系统 DNS / 代理 / fake-ip 参与进来，
+                 * 常常是另一个节点、TLS 正常（实测 2026-11-28，XGIMI Android 9：
+                 * safeDns 直连 25 个 IP 全 Handshake failed，系统 DNS 走代理
+                 * 同一个地址立刻 200）。超时不回退 —— 那多半是节点真挂了。
+                 */
+                try {
+                    c.disconnect();
+                } catch (Exception ignored) {
+                }
+                HttpURLConnection fb = (HttpURLConnection) new URL(idnUrl(url)).openConnection();
+                fb.setConnectTimeout(timeout);
+                fb.setReadTimeout(timeout);
+                fb.setRequestProperty("User-Agent", ua);
+                fb.setRequestProperty("Accept", "*/*");
+                if (referer != null) fb.setRequestProperty("Referer", referer);
+                c = fb;
+                code = c.getResponseCode();
+            }
+            if (code >= 400) {
                 c.disconnect();
                 return null;
             }
@@ -12889,13 +12936,126 @@ public class ApiServer {
             c.setSSLSocketFactory(sniFactory);
             c.setRequestProperty("Host", hostName);
             /*
-             * 不再设自定义 HostnameVerifier：主机名校验已交给
-             * SniSocketFactory 里的 endpointIdentificationAlgorithm=HTTPS。
-             * 这里再设一个会覆盖掉 JSSE 的检查（见 SniSocketFactory.wrap 注释）。
+             * 主机名校验用**捕获的原域名**显式做（见 verifierFor）：
+             * URL 已被换成 IP，交给 TLS 层自动校验会拿 IP 去比证书 SAN，
+             * 老 Android（Conscrypt）上必失败——这就是"整机 HTTPS 全挂"的根因。
              */
+            c.setHostnameVerifier(verifierFor(hostName));
             return c;
         } catch (Exception e) {
             return (HttpURLConnection) u.openConnection();
+        }
+    }
+
+    /**
+     * 用**原域名**校验服务器证书（RFC 2818 规则）。
+     *
+     * <p><b>为什么需要它</b>：{@link SniSocketFactory} 连的是 IP（URL 已被
+     * 换成 IP 以绕开坏 CDN 节点），TLS 层的自动主机名校验拿到的 peerHost
+     * 也是 IP —— 证书 SAN 里只有域名，因此老 Android（Conscrypt）必然失败
+     * （见 SniSocketFactory.wrap 的实测记录）。这里改成调用方显式校验，
+     * hostname 由闭包捕获，与底层实现无关。
+     *
+     * <p><b>规则</b>：有 SAN 只看 SAN（DNS 只做一级通配 `*.example.com`），
+     * 无 SAN 时回退 CN —— 与改动前 JDK {@code HostnameChecker} 的行为一致，
+     * 不因为这次修复把原本能通的目标变严格（国内仍有少数只有 CN 的老证书）。
+     * IP 字面量不做 CN 回退（CN 里不可能是 IP，回退只会误放行）。
+     *
+     * <p><b>安全性</b>：比 2026-10-30 之前的 `(h,session) -> true` 严格得多
+     * （那个等于完全关闭校验，任意有效证书都能冒充图床），也和浏览器一致。
+     */
+    static javax.net.ssl.HostnameVerifier verifierFor(String host) {
+        return (ignoredPeerHost, session) -> {
+            try {
+                java.security.cert.Certificate[] chain = session.getPeerCertificates();
+                if (chain == null || chain.length == 0) {
+                    System.out.println("[tls] verify no-certs host=" + host);
+                    return false;
+                }
+                boolean ok = certMatchesHost((java.security.cert.X509Certificate) chain[0], host);
+                if (!ok) {
+                    System.out.println("[tls] verify FAILED host=" + host
+                            + " peer=" + ignoredPeerHost);
+                }
+                return ok;
+            } catch (Exception e) {
+                System.out.println("[tls] verify error host=" + host
+                        + " peer=" + ignoredPeerHost + " -> " + e);
+                return false;
+            }
+        };
+    }
+
+    private static boolean certMatchesHost(java.security.cert.X509Certificate cert, String host) {
+        if (host == null || host.isEmpty()) return false;
+        try {
+            java.util.Collection<java.util.List<?>> sans = cert.getSubjectAlternativeNames();
+            if (sans == null || sans.isEmpty()) {
+                if (isIpLiteral(host)) return false;
+                String cn = commonNameOf(cert);
+                return cn != null && dnsNameMatches(host, cn);
+            }
+            boolean hostIsIp = isIpLiteral(host);
+            for (java.util.List<?> san : sans) {
+                if (san == null || san.size() < 2) continue;
+                Object typeObj = san.get(0);
+                Object valueObj = san.get(1);
+                if (!(typeObj instanceof Integer) || !(valueObj instanceof String)) continue;
+                int type = (Integer) typeObj;
+                String value = (String) valueObj;
+                if (hostIsIp) {
+                    // type 7 = IP Address（证书里存的是点分/IPv6 文本）
+                    if (type == 7 && value.equalsIgnoreCase(host)) return true;
+                } else {
+                    // type 2 = DNS
+                    if (type == 2 && dnsNameMatches(host, value)) return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 纯字面 IP（IPv4 点分或含冒号的 IPv6），不是域名。 */
+    private static boolean isIpLiteral(String host) {
+        if (host.indexOf(':') >= 0) return true;
+        for (int i = 0; i < host.length(); i++) {
+            char ch = host.charAt(i);
+            if ((ch < '0' || ch > '9') && ch != '.') return false;
+        }
+        return true;
+    }
+
+    /** DNS 名匹配：大小写无关；`*.` 只覆盖一级子域（与浏览器一致）。 */
+    private static boolean dnsNameMatches(String host, String pattern) {
+        String h = host.toLowerCase(java.util.Locale.ROOT);
+        String p = pattern.toLowerCase(java.util.Locale.ROOT);
+        if (p.startsWith("*.")) {
+            int dot = h.indexOf('.');
+            return dot > 0 && h.substring(dot + 1).equals(p.substring(2));
+        }
+        return h.equals(p);
+    }
+
+    /**
+     * 从 subject DN 里取 CN，仅用于「无 SAN 的老证书」回退。
+     *
+     * <p>不用 {@code LdapName}：只需要一个字段，而 Android 上 javax.naming 的
+     * 实现随版本差异较大。这里按 RFC2253 的转义规则处理 {@code \,} 与 {@code \\}。
+     */
+    private static String commonNameOf(java.security.cert.X509Certificate cert) {
+        try {
+            String dn = cert.getSubjectX500Principal()
+                    .getName(javax.security.auth.x500.X500Principal.RFC2253);
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("(?:^|,)\\s*CN=((?:[^,\\\\]|\\\\.)*)",
+                            java.util.regex.Pattern.CASE_INSENSITIVE)
+                    .matcher(dn);
+            if (!m.find()) return null;
+            return m.group(1).replace("\\,", ",").replace("\\\\", "\\");
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -12922,21 +13082,25 @@ public class ApiServer {
             javax.net.ssl.SSLParameters p = ssl.getSSLParameters();
             p.setServerNames(java.util.Collections.singletonList(sni));
             /*
-             * ★ 让 JSSE 自己做主机名校验（2026-10-30 安全审计 H12）。
+             * ★ 这里**故意不设** endpointIdentificationAlgorithm（2026-11-28 实测）。
              *
-             * 原来靠调用方 `setHostnameVerifier((h,session) -> { ...verify(); return true; })`
-             * —— 默认 verifier 的返回值被丢弃、无条件 return true，
-             * 而 JDK 的默认 verifier **恒返回 false**、安装自定义 verifier 又会
-             * 关掉 SSLSocket 层的自动校验。净效果是**完全没有主机名校验**：
-             * 任何持有任意有效证书的人都能冒充视频源/图床（实测连接
-             * Cloudflare IP 且 Host 填一个不相干域名，TLS 与 HTTP 都通）。
+             * 2026-10-30 的安全审计（H12）曾用它把主机名校验交给 TLS 层，
+             * JVM 上没问题；但它的校验 hostname 来自**底层实现的 peerHost**，
+             * 而 Android 9（Conscrypt / SDK 28）用的是连接的 **IP**（不是我们
+             * createSocket 时传进去的域名）—— 证书 SAN 里只有域名，于是必然抛
+             * {@code SSLHandshakeException: No subjectAltNames on the certificate match}。
              *
-             * endpointIdentificationAlgorithm=HTTPS 是 JSSE 的标准做法：
-             * 握手时按服务器证书的 SAN 校验 `host`，不通过就抛
-             * SSLHandshakeException。设了它之后**必须去掉**自定义 verifier
-             * （否则两套机制打架）。
+             * 实测（XGIMI 投影仪 Android 9）：开启时**整机所有 HTTPS 全挂**
+             * —— 海报、弹幕、播放流同时失败，而 HTTP 80 全部正常；连
+             * {@code https://192.168.1.1/}（烽火光猫，证书 SAN 里恰好带 IP）
+             * 都能通。Android 15 与 JVM 都不复现，所以只在老 TV 盒子上炸，
+             * 极易被误判成"源挂了 / 网络问题"。
+             *
+             * 现在 TLS 层只管 SNI，主机名校验交给调用方的
+             * {@link #verifierFor(String)} —— 那里用**捕获的原域名**校验，
+             * 不依赖底层 peerHost，三端行为一致，而且比原来的
+             * `(h,session) -> true` 严格得多（那个等于没有校验）。
              */
-            p.setEndpointIdentificationAlgorithm("HTTPS");
             ssl.setSSLParameters(p);
             return ssl;
         }
@@ -12956,6 +13120,18 @@ public class ApiServer {
             return wrap(base.createSocket(s, this.sni.getAsciiName(), this.port, autoClose));
         }
 
+        /*
+         * ★ 下面四个重载保持原样交给 base（2026-11-28 定）。
+         *
+         * 曾改成「自己建 TCP 连 IP + TLS 层用域名」，用来救 Android 9 的
+         * hostname 校验；但主机名校验现在由调用方的 {@link #verifierFor(String)}
+         * 用**闭包捕获的原域名**显式完成，TLS 层不再依赖 peerHost，
+         * 这一步就没有必要了。自己建连反而带来两个隐性回归：
+         *   · 连接阶段被固定超时截断，上层 setConnectTimeout(timeout) 失效
+         *   · 额外承担 localAddress 绑定的语义
+         * 所以回退：URL 里是什么地址就交给 base 连什么，SNI 由 wrap() 换成域名，
+         * 主机名校验由 verifier 负责 —— 三端行为一致。
+         */
         @Override
         public java.net.Socket createSocket(String host, int port)
                 throws java.io.IOException {
@@ -13353,7 +13529,41 @@ public class ApiServer {
                 if (range != null) c.setRequestProperty("Range", range);
                 applyExtraHeaders(c, extraMap);
 
-                code = c.getResponseCode();
+                try {
+                    code = c.getResponseCode();
+                } catch (java.io.IOException sslErr) {
+                    /*
+                     * ★ 握手阶段就失败时，下面那段"按状态码回退"根本走不到
+                     * （实测 2026-11-28，XGIMI 投影仪 Android 9）。
+                     *
+                     * DoH 拿到的是直连节点；它若已换成 Let's Encrypt 新根链
+                     * （YR2 → Root YR → 跨签名 X1），老 Android 的根证书库构建
+                     * 不出这条链，getResponseCode() 直接抛
+                     * `SSLHandshakeException: Handshake failed`。而同一时刻系统
+                     * DNS 走代理/fake-ip 连的是另一个节点，TLS 反而正常
+                     * （实测 safeDns=false 时同一个 m3u8 立刻 200）。
+                     *
+                     * 所以 SSL 类失败 + 开着 safeDns 时退回域名直连重试一次；
+                     * 超时不回退——那多半是节点真挂了，回退只会多耗一轮。
+                     */
+                    if (!(sslErr instanceof javax.net.ssl.SSLException)
+                            || !loadPolicy().optBoolean("safeDns", false)) {
+                        throw sslErr;
+                    }
+                    try {
+                        c.disconnect();
+                    } catch (Exception ignored) {
+                    }
+                    c = (HttpURLConnection) new URL(current).openConnection();
+                    c.setInstanceFollowRedirects(false);
+                    c.setConnectTimeout(15_000);
+                    c.setReadTimeout(30_000);
+                    c.setRequestProperty("User-Agent", ua);
+                    if (!referer.isEmpty()) c.setRequestProperty("Referer", referer);
+                    if (range != null) c.setRequestProperty("Range", range);
+                    applyExtraHeaders(c, extraMap);
+                    code = c.getResponseCode();
+                }
                 // 安全 DNS 把域名换成 IP 直连，某些 CDN（如 mux.dev）依赖 SNI 做路由，
                 // 会返回 421。这种情况下退回正常解析重试一次，避免安全 DNS 反而弄坏别的站点。
                 if (code == 421 || code == 400 || code == 502 || code == 503) {
@@ -14238,13 +14448,15 @@ public class ApiServer {
              * 第二条，副作用是**彻底关掉了主机名校验**（任何有效证书都能冒充
              * 图床，实测拿 Cloudflare IP + 不相干 Host 头能通）。
              *
-             * 现在用同一个 SniSocketFactory：TCP 连 IP，握手时 SNI 与
-             * endpointIdentificationAlgorithm=HTTPS 都用原域名。
+             * 现在用同一个 SniSocketFactory：TCP 连 IP，握手时用原域名的 SNI；
+             * 主机名校验由 verifierFor 用同一个域明显式做（TLS 层自动校验在
+             * 老 Android 上会拿 IP 去比 SAN，见 SniSocketFactory.wrap 的实测）。
              */
             hc.setSSLSocketFactory(new SniSocketFactory(
                     (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault(),
                     u.getHost(),
                     u.getPort() > 0 ? u.getPort() : 443));
+            hc.setHostnameVerifier(verifierFor(u.getHost()));
         }
         if (referer != null) c.setRequestProperty("Referer", referer);
         if (ua != null) c.setRequestProperty("User-Agent", ua);
@@ -14351,13 +14563,59 @@ public class ApiServer {
                         } catch (Exception ignored) {
                         }
                     }
-                    // 换下一个 IP
+                    /*
+                     * ★ SSL 握手失败**不再试后面的 IP**（2026-11-28 实测）。
+                     *
+                     * 这类失败是**域名/环境级**的（典型：这个 CDN 在中国大陆的
+                     * 节点全换成 Let's Encrypt 新根链，而老 Android 的根证书库
+                     * 构建不出链），同一域名的 25 个 A 记录会一个不落地全失败。
+                     * 全试一遍要 8 秒（实测 8.46s），海报墙会明显卡住。
+                     *
+                     * 因此首个 SSL 失败就退出循环，交给下面的"回退域名直连"——
+                     * 那条路径往往一次就通（走系统 DNS/代理，连的是另一个节点）。
+                     * 超时/连接拒绝仍然逐个换 IP：那才是"单个节点坏了"的形态，
+                     * 多 IP 重试本来就是为了它。
+                     */
+                    if (e instanceof javax.net.ssl.SSLException) break;
                 }
             }
             if (c == null) {
-                sendJson(ex, 502, "{\"code\":-1,\"msg\":"
-                        + JSONObject.quote("all " + hosts.size() + " IPs failed: " + lastErr) + "}");
-                return;
+                /*
+                 * ★ SSL 类失败时回退「域名直连」（2026-11-28 实测，XGIMI Android 9）。
+                 *
+                 * DoH 拿到的是**直连节点**，而这类节点可能已换成 Let's Encrypt
+                 * 新根链（`YR2 → Root YR → 跨签名 X1`）；老 Android 的根证书库
+                 * 构建不出这条链，于是所有 IP 都是
+                 * `SSLHandshakeException: Handshake failed`。同一时刻系统 DNS
+                 * 走代理/fake-ip 连的是另一个节点，TLS 反而正常 —— 实测
+                 * safeDns=false 时同一个 m3u8 立刻 200。
+                 *
+                 * 所以只在 **SSL 失败**（不是超时）时再走一次域名直连，让系统
+                 * DNS / 代理 / fake-ip 这些环境能力参与进来。超时不回退：那多半
+                 * 是节点真挂了，回退只会多耗一轮。
+                 */
+                if (lastErr instanceof javax.net.ssl.SSLException) {
+                    try {
+                        HttpURLConnection fb = (HttpURLConnection)
+                                new URL(idnUrl(realUrl)).openConnection();
+                        fb.setInstanceFollowRedirects(false);
+                        fb.setConnectTimeout(6_000);
+                        fb.setReadTimeout(15_000);
+                        fb.setRequestProperty("User-Agent", ua);
+                        if (useReferer != null) fb.setRequestProperty("Referer", useReferer);
+                        fb.setRequestProperty("Accept", "image/webp,image/jpeg,image/png,image/gif,*/*;q=0.5");
+                        fb.getResponseCode();
+                        c = fb;
+                        headersDone = true;
+                    } catch (Exception e2) {
+                        // 回退也失败：仍按 DoH 那次的错误上报，别把两层错误混在一起
+                    }
+                }
+                if (c == null) {
+                    sendJson(ex, 502, "{\"code\":-1,\"msg\":"
+                            + JSONObject.quote("all " + hosts.size() + " IPs failed: " + lastErr) + "}");
+                    return;
+                }
             }
             // 下面那段"补 UA/Referer/Accept"只给单路径分支用：多 IP 分支在
             // getResponseCode() 之前已经把三个头都设好了，再设会抛
@@ -15495,6 +15753,108 @@ public class ApiServer {
     }
 
     /**
+     * 导入历史：最近成功导入过的配置地址。
+     *
+     * <p>为什么落盘而不是只留内存里的 {@code lastImport}：输入框里只有
+     * "最后粘贴的那一条"，多仓切仓/换源之后想回到上一条地址就得重新找。
+     * 历史文件重启后仍在，前端用一个历史按钮回填。
+     */
+    private static final String IMPORT_HISTORY = "config.import.history.json";
+    /** 最多留 20 条：足够回溯，文件也不会大 */
+    private static final int IMPORT_HISTORY_MAX = 20;
+
+    /** 读历史（不存在/坏了都当空表，调用方不必判空）。 */
+    private static JSONArray importHistoryRead() {
+        try {
+            java.io.File f = core.DataPaths.file(IMPORT_HISTORY);
+            if (!f.isFile() || f.length() == 0) return new JSONArray();
+            String s = new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                    StandardCharsets.UTF_8);
+            if (s.trim().isEmpty()) return new JSONArray();
+            JSONArray a = new JSONObject(s).optJSONArray("entries");
+            return a == null ? new JSONArray() : a;
+        } catch (Throwable t) {
+            return new JSONArray();
+        }
+    }
+
+    /** 历史表 JSON 文本（拼装失败也回一个合法空表，前端不必判错）。 */
+    private static String importHistoryJson() {
+        try {
+            return new JSONObject().put("ok", true)
+                    .put("entries", importHistoryRead()).toString();
+        } catch (Throwable t) {
+            return "{\"ok\":true,\"entries\":[]}";
+        }
+    }
+
+    /**
+     * 记一条导入历史：同 URL 去重并提到最前（用户想找的总是最近那条）。
+     *
+     * <p>不因为写失败影响导入结果 —— 历史是便利功能，失败只是少一条记录。
+     */
+    private static void recordImportHistory(String url, int sites, int total, String mode) {
+        if (url == null || url.trim().isEmpty()) return;
+        try {
+            JSONArray old = importHistoryRead();
+            JSONArray out = new JSONArray();
+            out.put(new JSONObject()
+                    .put("url", url)
+                    .put("at", System.currentTimeMillis())
+                    .put("sites", sites)
+                    .put("total", total)
+                    .put("mode", mode == null ? "" : mode));
+            for (int i = 0; i < old.length() && out.length() < IMPORT_HISTORY_MAX; i++) {
+                JSONObject e = old.optJSONObject(i);
+                if (e == null) continue;
+                // 同地址只留最新那条（时间/站数都是这次导入的结果）
+                if (url.equals(e.optString("url", ""))) continue;
+                out.put(e);
+            }
+            core.DataPaths.write(IMPORT_HISTORY,
+                    new JSONObject().put("entries", out).toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 导入的地址是否已经不属于缓存里那份多仓。
+     *
+     * <p>判据：地址既不是索引本身、也不在仓列表里。命中说明用户换成了别的源，
+     * 再摆出"当前仓：脚本源"是误导（那个仓早就不生效了）。
+     */
+    private static boolean depotForeign(String importedUrl) {
+        JSONObject c = depotCacheRead();
+        if (c == null || importedUrl == null || importedUrl.trim().isEmpty()) return false;
+        if (importedUrl.equals(c.optString("index", ""))) return false;
+        JSONArray entries = c.optJSONArray("entries");
+        if (entries != null) {
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject e = entries.optJSONObject(i);
+                if (e != null && importedUrl.equals(e.optString("url", ""))) return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 标记"缓存里的仓列表已经不代表当前配置"。
+     *
+     * <p>为什么落成缓存字段而不是每次现算：用户**重新探测**就是在主动要这份列表，
+     * 那时要能重新显示（探测时写 false）。现算的话刷新页面又会被藏起来，
+     * 用户会觉得"我刚探过，怎么又没了"。
+     */
+    private static void depotMarkDetached(boolean detached) {
+        try {
+            JSONObject c = depotCacheRead();
+            if (c == null) return;
+            c.put("detached", detached);
+            depotCacheWrite(c);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
      * 探测多仓索引：列出每个仓能不能用、有多少站我们**真的能加载**。
      *
      * <p><b>为什么做这个</b>：多仓索引（{@code {"urls":[{url,name}]}}）里十几个仓
@@ -15529,6 +15889,8 @@ public class ApiServer {
                         .put("index", c.optString("index", ""))
                         .put("active", c.optString("active", ""))
                         .put("probedAt", at)
+                        // 已经换成别的源了：列表留着但前端不摆出来（见 depotMarkDetached）
+                        .put("detached", c.optBoolean("detached", false))
                         .put("stale", at > 0 && System.currentTimeMillis() - at > 24 * 3600_000L)
                         .put("entries", c.optJSONArray("entries") == null
                                 ? new JSONArray() : c.optJSONArray("entries"));
@@ -15645,10 +16007,13 @@ public class ApiServer {
                 .put("index", url)
                 .put("probedAt", System.currentTimeMillis())
                 .put("active", active)
+                // 重新探测 = 用户主动要这份列表，之前的"已切走"标记作废
+                .put("detached", false)
                 .put("entries", sorted);
         depotCacheWrite(cache);
         sendJson(ex, 200, new JSONObject().put("ok", true)
                 .put("index", url).put("active", active).put("probedAt", cache.optLong("probedAt"))
+                .put("detached", false)
                 .put("entries", sorted).toString());
     }
 
@@ -16547,6 +16912,14 @@ public class ApiServer {
                 ? "有源 jar 未装载，相关站点在本构建不可用" : "");
         // 多仓：记下索引/当前仓，重启后设置页仍能一键切换
         depotRemember(url, isDepot, activeRepo, isDepot ? depotOut : null);
+        /*
+         * 换成别的单仓地址后，缓存里那份多仓列表就不再代表当前配置：
+         * 打上"已切走"标记，前端据此不摆出来（重新探测会清掉标记）。
+         */
+        depotMarkDetached(depotForeign(url));
+        // 让前端立刻收起仓列表，不用再发一次 GET
+        res.put("detached", depotForeign(url));
+        recordImportHistory(url, okCount, siteCount(), isMerge ? "merge" : "replace");
         lastImport = res;
         System.out.println("[import:" + (isMerge ? "merge" : "replace") + "] " + url
                 + " -> " + okCount + " sites, " + skipped.length() + " skipped, table now "
