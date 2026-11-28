@@ -149,7 +149,12 @@ describe('4xx 快速判死：不能误杀正在播的流', () => {
 
   it('★ 必须要求"一个分片都没成功过"才快速判死', () => {
     const i = code.indexOf('h.on(Hls.Events.ERROR')
-    const body = code.slice(i, i + 1200)
+    /*
+     * 窗口只用来界定"在同一个 ERROR 处理器里"，不是精确坐标：
+     * 2026-11-28 在处理器开头加了一行（记录 fatal 与否，面板上色用），
+     * 1200 就到不了 fragLoadedCount 判断了。放宽到 1600。
+     */
+    const body = code.slice(i, i + 1600)
     // 没有这个条件，播放中途的单个 404 会把能播的流误杀
     expect(body).toContain('fragLoadedCount === 0')
   })

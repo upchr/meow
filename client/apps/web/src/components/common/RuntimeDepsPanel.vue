@@ -63,6 +63,7 @@ const iosKind = computed(() => {
   if (u.includes('127.0.0.1:19330')) return '端内 Node（仅 JS）'
   return '远端运行时'
 })
+
 /** Node（drpy）是否可用：/api/runtime/status 的活体探测，不再拿熔断状态冒充 */
 const iosJsOk = computed(() => !!iosInfo.value?.ok)
 const iosPyState = computed(() => iosInfo.value?.py?.state || '')
@@ -75,6 +76,24 @@ const iosPy = computed(() => {
   return 'unknown'
 })
 const iosPyError = computed(() => (iosInfo.value?.py?.error || '').split('\n').slice(-3).join('\n'))
+
+/**
+ * 标题行右侧的一句话摘要。
+ *
+ * <p>2026-11-28 用户实测：「运行时 / 端内 drpy + CPython · .js/.py 源本机执行」
+ * 下面又写一行「本机运行时 / 端内 CPython + drpy」—— 同一件事说了两遍。
+ * 分区副标题已经说明"是什么"，这里只说**状态**；只有切到局域网 pyrt 时
+ * 才额外点明"远端运行时"（那时地址与端内不同，用户需要知道） 。
+ */
+const iosSummary = computed(() => {
+  if (!iosInfo.value) return ''
+  const js = iosJsOk.value ? 'Node 可用' : 'Node 不可用'
+  const py =
+    iosPy.value === 'yes' ? 'Python 可用' : iosPy.value === 'no' ? 'Python 不可用' : 'Python 未启用'
+  return iosInfo.value.url.includes('127.0.0.1:')
+    ? `${js} · ${py}`
+    : `${iosKind.value} · ${js} · ${py}`
+})
 
 let disposed = false
 
@@ -259,7 +278,7 @@ onBeforeUnmount(() => {
     <div class="set-sub" data-runtime-deps>
       <span class="font-medium text-ink-2">本机运行时</span>
       <span class="text-[length:var(--fs-mini)] text-ink-3">
-        {{ iosKind }}
+        {{ iosSummary }}
       </span>
       <span class="flex-1" />
       <button

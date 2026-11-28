@@ -72,6 +72,7 @@ import {
   fetchLives,
   fetchLivePlaylist,
   getConfigBackup,
+  getConfigHistory,
   getImportJobState,
   getCachedDepot,
   fetchPendingSites,
@@ -83,6 +84,7 @@ import {
   restoreConfigBackup,
   tauriInvoke,
   type ConfigBackupInfo,
+  type ConfigHistoryEntry,
   type ConfigImportDiff,
   type ConfigImportResult,
   type ConfigSkippedSite,
@@ -195,6 +197,7 @@ import GitAccelPanel from '@/components/common/GitAccelPanel.vue'
 // 报 Unresolved component，页面上「运行时」分区只剩标题 + 副标题（2026-11-27
 // iOS 真机实测；PC/fpk 同受影响）。`tests/runtime-placement.test.ts` 锁住这一条。
 import RuntimeDepsPanel from '@/components/common/RuntimeDepsPanel.vue'
+import SourceHistoryDialog from '@/components/common/SourceHistoryDialog.vue'
 import { alertDialog, confirmDialog } from '@/composables/useConfirm'
 
 const store = useAppStore()
@@ -2494,6 +2497,19 @@ const depotIndex = ref('')
 const depotActive = ref('')
 const depotProbedAt = ref(0)
 const depotStale = ref(false)
+/**
+ * 缓存里的仓列表还代表不代表当前配置。
+ *
+ * <p>true = 用户后来导入了**别的**单仓地址（多仓切仓或换源），那份列表已经
+ * 过期：再摆出「当前仓：脚本源」会让人以为那个仓还在生效（2026-11-28 用户口径：
+ * 覆盖导入新源之后不该继续显示之前的多仓内容）。列表数据仍留在后端缓存里，
+ * 重新点「多仓探测」会清掉这个标记。
+ */
+const depotDetached = ref(false)
+/** 导入历史弹框（最近用过的配置地址） */
+const historyOpen = ref(false)
+const historyEntries = ref<ConfigHistoryEntry[]>([])
+const historyBusy = ref(false)
 /** 导入前留下的旧配置快照 */
 const cfgBackup = ref<ConfigBackupInfo>({ exists: false })
 const restoreBusy = ref(false)
@@ -2512,6 +2528,13 @@ async function loadDepotCache() {
     depotActive.value = r.active || ''
     depotProbedAt.value = r.probedAt || 0
     depotStale.value = r.stale === true
+    depotDetached.value = r.detached === true
+    if (depotDetached.value) {
+      // 已经换成别的源：列表不摆出来，消息也清掉（否则上面还挂着一句"共 N 个仓"）
+      depotEntries.value = []
+      depotMsg.value = ''
+      return
+    }
     if (r.entries?.length) {
       depotEntries.value = r.entries
       // jarKnown === false = 本机没有内置 jar，inJar 是未知而不是 0：不计入"能用"
@@ -2527,6 +2550,35 @@ async function loadDepotCache() {
   }
 }
 void loadDepotCache()
+
+/**
+ * 打开导入历史。
+ *
+ * <p>每次打开都重新拉：历史会在别处（另一台设备 / 另一次导入）变，缓存一份
+ * 只会显示旧列表。
+ */
+async function openImportHistory() {
+  historyBusy.value = true
+  historyOpen.value = true
+  try {
+    historyEntries.value = (await getConfigHistory()).entries
+  } finally {
+    historyBusy.value = false
+  }
+}
+
+/**
+ * 从历史里点一条：回填地址并直接「读取」一次。
+ *
+ * <p>只回填不读的话用户还要再点一下；直接读取是**只读**动作（不写配置），
+ * 读到的预览面板里还能看到站数与导入方式，等于省一步。
+ */
+async function pickImportHistory(url: string) {
+  historyOpen.value = false
+  cfgUrl.value = url
+  onCfgUrlInput()
+  await doPreviewImport()
+}
 
 /**
  * 探测多仓。
@@ -2556,6 +2608,8 @@ async function probeDepot() {
     depotActive.value = r.active || ''
     depotProbedAt.value = r.probedAt || Date.now()
     depotStale.value = false
+    // 重新探测 = 用户主动要这份列表：之前的"已切走"标记作废（后端探测时也会清）
+    depotDetached.value = false
     const usable = depotEntries.value.filter(
       (e) => e.ok && e.jarKnown !== false && (e.inJar || 0) + (e.direct || 0) > 0,
     )
@@ -2925,6 +2979,8 @@ async function doImportConfig() {
     cfgPreview.value = null
     // 多仓：后端已把"当前仓/索引/仓列表"落盘，这里同步本地状态（「当前」标记）
     if (r.active) depotActive.value = r.active
+    // 导入的是别的单仓地址 → 后端把仓列表标成"已切走"，本地立刻收起来
+    depotDetached.value = r.detached === true
     void loadDepotCache()
     // 系统通知：导入几十秒，用户可能已经切走（2026-11-25 用户要求）
     iosNotify('导入完成', `已按「${cfgApplyLabel.value}」导入 ${r.sites}/${r.totalSites} 站`)
@@ -6795,6 +6851,23 @@ onBeforeUnmount(() => {
           @input="onCfgUrlInput"
           @keyup.enter="doPreviewImport"
         />
+        <!--
+          导入历史：回填之前用过的配置地址。
+          放在地址框与「读取」之间，是"地址"这个字段自己的附属动作，
+          不放右侧工具区（那是整页级操作，会被当成另一件事）。
+        -->
+        <button
+          class="flex shrink-0 items-center gap-1 rounded-md border border-line bg-field px-2 py-1.5 text-xs text-ink-3 transition hover:bg-card-hover hover:text-ink"
+          title="导入历史：回填之前用过的配置地址"
+          aria-label="导入历史"
+          :disabled="historyBusy"
+          @click="openImportHistory"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-3.5 w-3.5">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
+          </svg>
+        </button>
         <button
           class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
           :disabled="cfgBusy"
@@ -6821,14 +6894,17 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <p v-if="depotMsg" class="mt-1.5 text-[11px] text-ink-3">{{ depotMsg }}</p>
+      <p v-if="depotMsg && !depotDetached" class="mt-1.5 text-[11px] text-ink-3">{{ depotMsg }}</p>
 
       <!--
         已保存的多仓列表（后端 config.depot.json）：重启后仍在这里，
         不用重新粘贴索引地址。「刷新探测」只刷新数据，不动配置。
+
+        depotDetached = 当前配置已经换成别的源：整块不渲染（用户口径：覆盖
+        导入新源之后不该继续显示之前的多仓内容）。数据仍在后端，重新探测即回来。
       -->
       <div
-        v-if="depotEntries.length && depotIndex"
+        v-if="!depotDetached && depotEntries.length && depotIndex"
         class="mt-2 rounded-md bg-field/50 px-2.5 py-1.5 text-[11px] text-ink-3"
       >
         <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -7013,7 +7089,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 多仓候选：按"能用几站"排序，可用的排前面 -->
-      <div v-if="depotEntries.length" class="mt-2 space-y-1">
+      <div v-if="!depotDetached && depotEntries.length" class="mt-2 space-y-1">
         <div
           v-for="e in depotEntries"
           :key="e.url"
@@ -8995,6 +9071,15 @@ onBeforeUnmount(() => {
       :version="appVersion"
       @close="closeAbout()"
       @open-project="openProjectPage()"
+    />
+
+    <!-- 导入历史（回填之前用过的配置地址）。Teleport 在组件内部 -->
+    <SourceHistoryDialog
+      :open="historyOpen"
+      :entries="historyEntries"
+      :current="cfgUrl.trim()"
+      @close="historyOpen = false"
+      @pick="pickImportHistory"
     />
 
     <!-- ══════════ 站点明细弹层 ══════════
