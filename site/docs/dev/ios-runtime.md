@@ -1,10 +1,12 @@
 # iOS 运行时（js / py 源内置）
 
 > 目标：iOS（IPA）上能直接跑 `.js` 与 `.py` 源，不依赖外部机器。
-> 形态与 `feat/loader-probe` 的 pyrt 契约**完全一致**：后端只认 `policy.json` 的
-> `jsRuntime` 一个键，一个地址同时服务 js + py，Java 侧一行不改。
+> 形态与 `feat/loader-probe` 的 pyrt 契约**完全一致**：端内一个 loopback 地址同时服务
+> js + py，Java 侧零改动。**已实现**：Node 跑 drpy 载荷 + CPython 跑 pyrt（均随包），
+> 端内端口 danmu 19321 / drpy 19330 / pyrt 19331。
 
-**本文是设计方案，不是已实现功能。** 执行顺序见 §7，前置条件见 §8。
+> ★ 2026-11-28 运行时分层后，宿主多认一个 `policy.pyRuntimeAddr`（`.py` 优先、未配回落
+> `jsRuntime`）；iOS 继续只写 `jsRuntime` 单地址，零改动兼容。本文其余内容按设计稿保留作背景。
 
 ---
 
@@ -25,9 +27,9 @@
 
 | 端 | js 源 | py 源 | 机制 |
 |---|---|---|---|
-| Web / PC / Docker / fpk | ✅ | ✅ | `server/pyrt` 侧车：`.js` 转发本机 drpy，`.py` 本地 CPython |
+| Web / PC / Docker / fpk | ✅ | ✅ | 分层路由：`.js` → drpy 运行时（插件 / 容器），`.py` → pyrt（`pyRuntimeAddr`） |
 | TV(Android) | ✅ | ✅ | 端内 QuickJS（`QuickJsRuntimeServer`）+ Chaquopy 独立模块进程（`PythonService`） |
-| **iOS** | ❌ | ❌ | 端内 Node 只跑 `danmu_api/server.js`（弹幕聚合） |
+| **iOS** | ✅ | ✅ | 端内 Node 跑 drpy 载荷 + 端内 CPython 跑 pyrt（均随包），同一路由地址 |
 
 ### 1.2 后端契约（源码位置）
 
@@ -36,11 +38,12 @@
 | 运行时健康探测：`GET {base}/health` 返回 200 才算可用，结果缓存 15s | `ApiServer.java` 的 `scriptRuntimeUsable()` |
 | 脚本调用：`POST {base}/{site}/{action}`，头 `X-DRPY-Api`（URL 编码的脚本地址）、可选 `X-DRPY-Ext`，body 为 JSON | `ApiServer.java` 的 `callScriptRuntime()` |
 | 超时：正常 8s，熔断期 1s | 同上（`SCRIPT_RUNTIME_TIMEOUT_MS` / `SCRIPT_RUNTIME_FAST_TIMEOUT_MS`） |
-| 地址来源：`policy.json` 的 `jsRuntime`，为空则回落环境变量 `MEOW_JS_RUNTIME`，都空 → 返回「jsRuntime 未配置：该源是 drpy 脚本」 | `ApiServer.java` 的 `loadPolicy()` / `callScriptRuntime()` |
+| 地址来源：`.js` 用 `policy.json` 的 `jsRuntime`（空则回落 `MEOW_JS_RUNTIME`）；`.py` 优先 `pyRuntimeAddr`（空则回落 `MEOW_PY_RUNTIME`，再回落 `jsRuntime`） | `ApiServer.java` 的 `loadPolicy()` / `pyRuntimeAddr()` / `callScriptRuntime()` |
 | 策略文件位置：`DataPaths.file("policy.json")` → iOS 上是 `Documents/gateway/policy.json` | `ApiServer.java` 的 `policyFile()` |
-| iOS 侧目前**没有任何地方写 policy.json**（`*.swift` / `scripts/*.sh` 对 `policy.json`/`jsRuntime` 零命中） | — |
+| iOS 壳按真实运行时活体合并写 `Documents/gateway/policy.json`（只动 `jsRuntime` 一个键） | `Bootstrap.swift` |
 
-**所以 iOS 上 js 源当前只有一条路**：用户在设置页手动填 `jsRuntime`（`SettingsView.vue` 有输入框 + `savePolicy`）指向局域网某台机器的 drpy/pyrt。
+**iOS 壳会自己写 policy.json**：启动与回前台按真实运行时活体对齐 `jsRuntime`（指向端内 drpy）；
+设置页的手填地址仍然生效（保存后壳重建注入脚本再 reload，见 `Bootstrap.swift`）。
 
 ### 1.3 端内 Node 的硬约束
 

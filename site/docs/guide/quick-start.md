@@ -102,7 +102,7 @@ Web / PC 走 设置 →「搜索与源」，TV 走 设置 →「本机执行」�
 | 连接 | 后端地址、写操作令牌 | PC / TV 连远端后端；局域网写保护 | [局域网访问与令牌](/guide/web-docker#局域网访问与令牌) |
 | 本机插件（PC） | 插件源、影视后端 / drpy / 弹幕 / ffmpeg | 首次安装、插件升级 | [PC 桌面端](/guide/pc) |
 | 本机执行（TV） | 配置地址、导入到本机 | 端内直读源包 | [TV / 投影仪 / 手机](/guide/tv) |
-| 运行时模块（TV） | Node 运行时、弹幕组件 | 电视弹幕 | [TV 运行时模块](/ecosystem/runtime-module) |
+| 运行时模块（TV） | Node 运行时、Python 运行时、弹幕组件 | 电视弹幕、.py 源 | [TV 运行时模块](/ecosystem/runtime-module) |
 | 桌面端行为（PC） | 关闭窗口时最小化到托盘等 | 托盘习惯 | [PC 桌面端](/guide/pc) |
 | 搜索与源 | 配置源导入、站点管理、结果缓存、噪音过滤 | 导入源包、调搜索 | [导入源包](/guide/source-pack) |
 | 直播源 | 内置公共源、添加 m3u / txt、iptv-org 快捷添加 | 换直播源 | [点播与直播](/guide/vod-live) |

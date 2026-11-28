@@ -20,12 +20,13 @@ iOS 壳不再只是「连远端后端」：**进程内跑着与 PC/Docker 同一
 | 源导入 | 与 PC 同一套 `POST /api/config/import`（URL / 覆盖 / dryRun / `replaceSpider`）；**确认导入走后台线程 + 轮询**（见 §0.2） | 肥猫 `http://肥猫.net/tv` → 41 站；OECT 源服务 `config.all.json` → 54 站；真机踩过「转换太久被客户端超时」 |
 | dex 源包 | iOS 没有 fork/exec → **端内 dex2jar**（`core.Dex2JvmInProcess`，dex2jar 2.4 子集进 `jvm/libs`），`Dex2Jvm` 在 `-Dmeow.dex2jar.inprocess=true` 时反射调用它 | 肥猫顶层 dex → 893 个类；OECT 的 Jable（站点级 dex）→ 搜索 24 条 |
 | JVM 源包（class jar） | `URLClassLoader` 直接加载；**必须**带 `-XX:-BytecodeVerificationRemote`（外部 jar 的 stackmap 常不完整，否则 `VerifyError`） | OECT `spider.jar`：AppRJ 搜索 2 条（不开校验就是 VerifyError） |
-| 壳身份 | `window.meowIos` 桥（`version` / `apiBase` / `runtime`）→ `data-shell='ios'`；设置页「后端地址」改为只读（地址由壳写死） | 前端门禁 `device-profile` / `mobile-ux-polish` / `legacy-compat` 全绿 |
+| 壳身份 | `window.meowIos` 桥（`version` / `apiBase` / `runtime`）→ `data-shell='ios'`；设置页「后端地址」可配（默认端内；保存后壳重建注入脚本再 reload） | 前端门禁 `device-profile` / `mobile-ux-polish` / `legacy-compat` 全绿 |
 | CI | `_ios.yml`（未签名 IPA）、`_ios_ui.yml`（headless Chrome 快速截图）、`_ios_verify.yml`（runner 端到端，用的是 **IPA 里那份 host.jar**） | 三条流水线绿 |
 
 **仍然缺**（与 TV 的差距，逐条都有原因）：
 
-- **转码 / MKV / FLV / DTS**：端上无 ffmpeg，只有 WebKit + AVPlayer（HLS/mp4）。
+- **转码 / 冷门格式**：端上无 ffmpeg，转码路不可用；MKV / HEVC 由端内 VLCKit 原生播放
+  （`canUseNative` 含 iOS，点播与片库都能进端内播放器），FLV 等仍播不了。
 - **本地片库**：进程内没有可浏览的系统目录（`LibraryRoots` 只在 PC 插件模式追加盘符），
   实用路径是 WebDAV / SMB。
 - **局域网网关 / 手机推设置**：iOS 壳只绑回环，不给别的设备当后端。
@@ -897,11 +898,11 @@ TV 的接法在 `release.yml` 里是「`plan` 判定范围 → `tv` job 调 `_tv
 | 3 | 局域网扫描 | 能扫到后端；首次弹「本地网络」权限；拒绝后有可读提示 |
 | 4 | 搜索 / 详情 / 分页 | 与同后端 Web 端结果一致 |
 | 5 | HLS 播放 | 起播、暂停、seek、切集；横屏后控制栏/弹幕不被刘海遮挡 |
-| 6 | 非 HLS（MKV） | 走后端转码能播；不能播时提示可读，不黑屏转圈 |
+| 6 | 非 HLS（MKV） | 端内 VLCKit 直解能播；不能播时提示可读，不黑屏转圈 |
 | 7 | 弹幕 | 开关、透明度、手选源、切集后重新拉取 |
 | 8 | 收藏 / 历史 | 写后端；同账号 Web 端可见（跨端状态） |
 | 9 | 后台 / 锁屏 | 记录实际行为（继续播 / 暂停），按结果决定是否声明 `UIBackgroundModes` |
-| 10 | 更新提示 | 有新版本时打开 Release 页，不尝试下载安装 |
+| 10 | 更新提示 | 应用内弹框给 IPA 直链与侧载商店源链接（安装仍需重签） |
 | 11 | 投屏 | DLNA 发现（受 entitlement 影响）；失败可手填 IP |
 | 12 | 旋转 / 安全区 | 竖屏、横屏都无内容被裁；`viewport-fit=cover` 生效 |
 | 13 | 内置弹幕 | 后端**不装** danmu-api 插件时仍出弹幕；人为让内置 Node 启动失败 → 自动回退后端弹幕，不阻塞播放 |

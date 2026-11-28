@@ -108,7 +108,7 @@ services:
     environment:
       DRPY_PORT: "9330"
       DRPY_STRIP_REMOTE: "1"
-      # 容器间互信：pyrt 从 docker 网桥（172.x）转发 .js 过来，源地址永远不是回环。
+      # 容器间互信：apiserver / pyrt 从 docker 网桥（172.x）过来，源地址永远不是回环。
       # ★ 安全性依赖上面的端口只绑 127.0.0.1 —— 否则 DNAT 会让局域网请求也显示成
       #   网桥地址（172.x.0.1），私有网段判定就变成"谁都能执行脚本"。
       DRPY_TRUST_PRIVATE: "1"
