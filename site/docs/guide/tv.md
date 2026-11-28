@@ -84,10 +84,11 @@ iOS 有独立客户端（未签名 IPA，自签安装），见 [iPhone / iPad](/
 
 :::
 
-::: details 运行时模块（弹幕组件）
+::: details 运行时模块（Node / Python 运行时 · 弹幕组件）
 
-TV 的弹幕走运行时模块（Fongmi 形态的独立 APK，跑在单独的 `:node` 进程）。
-设置 →「运行时模块」：先装 Node 运行时（自动识别架构），再装弹幕组件（模块没装时按钮是灰的）。
+TV 的弹幕与脚本源走运行时模块（独立 APK：Node 跑在单独的 `:node` 进程，Python 跑在 Chaquopy 进程）。
+设置 →「运行时模块」：先装 Node 运行时（自动识别架构），再装弹幕组件（模块没装时按钮是灰的）；
+有 `.py` 源还要装 Python 运行时。
 组件说明、版本线与清单校验见 [TV 运行时模块](/ecosystem/runtime-module)。
 
 :::

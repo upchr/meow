@@ -45,8 +45,8 @@ IPA 的边界（平台限制，不是 bug）：
 
 | 限制 | 表现 | 说明 |
 |---|---|---|
-| 转码 | 片库转码不可用 | 端内没有 ffmpeg |
-| 格式 | MKV / FLV / DTS 播不了 | 只有 WebKit + AVPlayer（HLS / mp4） |
+| 转码 | 片库转码不可用 | 端内没有 ffmpeg（MKV 等由端内播放器直解） |
+| 格式 | MKV / HEVC 等常见容器端内直解；FLV、个别编码播不了 | 播放走 VLCKit；AVPlayer 只吃 HLS / mp4 |
 | 加密源 | 带 `.so` 的 Guard jar 加载不了 | iOS 不认 Android ELF |
 | 本地片库 | 没有系统目录可选 | 用 WebDAV / SMB |
 | 性能 | 搜索、详情比 PC 慢 | 端内 JVM 是解释器（OpenJDK Zero） |

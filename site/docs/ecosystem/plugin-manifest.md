@@ -55,7 +55,7 @@ my-plugin.zip
 | `inject` | | 启动后自动写配置 |
 
 `capability` 的取值以官方 manifest 为准：`apiserver` 用 `backend`，`danmu-api` 用 `danmaku`，
-`drpy` 用 `runtime`。`required` / `fatal` 的完整行为见开发文档 [插件系统](/dev/plugin-system)。
+`drpy` / `pyrt` 用 `runtime`。`required` / `fatal` 的完整行为见开发文档 [插件系统](/dev/plugin-system)。
 
 ## 占位符
 

@@ -365,7 +365,7 @@ curl -s localhost:30011/api/health                                    # 运行�
 
 ### 4.4 容器：改动前先读 site/docs/dev/docker.md §1.1
 
-`web`(30010) / `apiserver`(30011) / `drpy`(30013→9330) / `danmu_api`(30012)。
+`web`(30010) / `apiserver`(30011) / `drpy`(30013→9330) / `pyrt`(30014→19331) / `danmu_api`(30012)。
 **四条架构约束**（`depends_on` 为什么没有、nginx 上游为什么要用变量、
 `stop` vs `down`、`${VAR-}` vs `${VAR:-}`）见
 [site/docs/dev/docker.md §1.1](site/docs/dev/docker.md)——那里的理由写全了，别只看结论就改。

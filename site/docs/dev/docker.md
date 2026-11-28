@@ -19,13 +19,14 @@
 
 ---
 
-## 一、部署形态：四个容器
+## 一、部署形态：五个容器
 
 ```
    浏览器 ──30010──▶ web（nginx + 静态文件，反代 /api）
                         │ http://apiserver:9979
    PC / TV ──30011──▶ apiserver（JRE + spider + ffmpeg，/data 持久化）
-                        ├── http://drpy:9330        drpy（Node 运行时）
+                        ├── http://drpy:9330        drpy（Node 运行时，.js）
+                        ├── http://pyrt:19331       pyrt（Python 运行时，.py）
                         └── http://danmu_api:9321   danmu_api（官方镜像）
 ```
 
@@ -34,14 +35,19 @@
 | `web` | `Dockerfile.web` 本地构建 | nginx 1.27 + 前端构建产物 | `0.0.0.0:30010` |
 | `apiserver` | `Dockerfile.apiserver` 本地构建 | JRE 17 + `classes/` + `libs/` + ffmpeg（+ curl） | `127.0.0.1:30011` |
 | `drpy` | `Dockerfile.drpy` 本地构建 | Node 22，跑 `.js` / drpy 源 | `0.0.0.0:30013` → 9330 |
+| `pyrt` | `chrplus/meow-pyrt` 拉取 | CPython 3.12 + pyrt，跑 `.py` 源（独立版本线） | `0.0.0.0:30014` → 19331 |
 | `danmu_api` | `logvar/danmu-api:1.21.6` | 上游 Node 服务 | `127.0.0.1:30012` |
 
-带源形态多第五个容器 `meow-sources`（nginx，宿主 `18080`，自带主爬虫 + Jable +
+带源形态多第六个容器 `meow-sources`（nginx，宿主 `18080`，自带主爬虫 + Jable +
 54 站默认源），见 §3.3。
 
 **`drpy` 为什么不能省**：配置里 200+ 个源是 drpy/`.js`，没有这个运行时它们会被判
 “不可用”（`apiserver` 通过 `MEOW_JS_RUNTIME` 指向它）。`DRPY_STRIP_REMOTE=1` 默认开：
 drpy2 会纯副作用地 import 第三方 CDN 脚本，直接执行等于引入供应链风险。
+
+**`pyrt` 为什么存在**：`.py` 源由它执行。1.3.0 起分层路由：`.js` → `MEOW_JS_RUNTIME`
+（drpy），`.py` → `MEOW_PY_RUNTIME`（pyrt；未配回落 jsRuntime，兼容老的单地址部署）。
+pyrt 在全部四个主体 compose（含 `standalone` / `with-sources`）里都有。
 
 **`apiserver` 为什么带 ffmpeg**：浏览器内核没有 HEVC 解码器，NAS 上的 MKV（H.265）
 在 Web 端放不了；带 ffmpeg 才能按需转 HLS，代价是镜像大一个量级。`Transcode.ffmpegPath()`
@@ -76,7 +82,8 @@ proxy_pass http://$meow_backend;
 
 **④ 可置空的变量必须用 `${VAR-默认}`，不能写成 `${VAR:-默认}`**：后者把空串也当
 “未设置”，所以 `MEOW_DANMAKU_API=` 禁用弹幕会失效。`MEOW_JS_RUNTIME`、
-`MEOW_DANMAKU_API`、`MEOW_AUTH_TOKEN`、`MEOW_CORS` 四项用 `-`；端口、镜像 tag 仍用 `:-`。
+`MEOW_PY_RUNTIME`、`MEOW_DANMAKU_API`、`MEOW_AUTH_TOKEN`、`MEOW_CORS` 五项用 `-`；
+端口、镜像 tag 仍用 `:-`。
 
 ---
 
@@ -105,15 +112,16 @@ Windows 用 Docker Desktop 即可；**宿主机不需要 JDK / Node**，编译�
 
 | 文件（都在 `deploy/docker/`） | 形态 | 容器数 | 镜像来源 |
 |---|---|---|---|
-| `docker-compose.yml` | **主体直接启动**（发布镜像） | 4 | 从 Registry 拉 |
-| `docker-compose.build.yml` | **主体构建**（本地源码） | 4 | 本地构建 |
-| `docker-compose.with-sources.yml` | **带源主体启动**：主栈 + 源服务 | 5 | 从 Registry 拉 |
+| `docker-compose.yml` | **主体直接启动**（发布镜像） | 5 | 从 Registry 拉 |
+| `docker-compose.build.yml` | **主体构建**（本地源码） | 5 | 本地构建 |
+| `docker-compose.with-sources.yml` | **带源主体启动**：主栈 + 源服务 | 6 | 从 Registry 拉 |
 | `docker-compose.sources.yml` | **源服务独立启动** | 1 | 从 Registry 拉 |
-| `docker-compose.standalone.yml` | **独立编排（下载即用，不 clone 仓库）** | 4 | 从 Registry 拉（用法见 [Web / Docker](/guide/web-docker)） |
+| `docker-compose.standalone.yml` | **独立编排（下载即用，不 clone 仓库）** | 5 | 从 Registry 拉（用法见 [Web / Docker](/guide/web-docker)） |
 
 前两个**完整且独立，二选一，不是叠加**：端口、环境变量、卷、网络、`name: meow`、
 `container_name` 完全一致，唯一差别是后者多了 `build:` 段，切换时接管同一组容器。
-drpy 的 tag 来源不同——`docker-compose.yml` 用 `${DRPY_VERSION:-0.9.23}`，`.build.yml`
+drpy 的 tag 来源不同——`docker-compose.yml` 用 `${DRPY_VERSION:-0.9.26}`，`.build.yml`；
+pyrt 拉取型默认 `${PYRT_VERSION:-latest}`（build.yml 钉 `0.1.4`）。
 默认用 `${MEOW_VERSION}` 给本地产物打 tag；要跨两个文件复用同一个 drpy 镜像，在
 `.env` 里显式设 `DRPY_IMAGE`。
 
@@ -249,7 +257,7 @@ compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps
 | `WEB_PORT` / `APISERVER_PORT` / `DANMU_API_PORT` / `DRPY_PORT` | `30010` / `30011` / `30012` / `30013` | A | 端口冲突 |
 | `APISERVER_BIND` / `DANMU_BIND` | `127.0.0.1` | A | 给 TV / 局域网直连改 `0.0.0.0`；danmu 同理 |
 | `MEOW_APISERVER` | `http://apiserver:9979` | B | web 连外部后端时改绝对地址 |
-| `MEOW_JS_RUNTIME` / `MEOW_DANMAKU_API` | `http://drpy:9330` / `http://danmu_api:9321` | B | 不启动对应服务时置空 |
+| `MEOW_JS_RUNTIME` / `MEOW_PY_RUNTIME` / `MEOW_DANMAKU_API` | `http://drpy:9330` / `http://pyrt:19331` / `http://danmu_api:9321` | B | 不启动对应服务时置空 |
 | `MEOW_AUTH_TOKEN` | 空（关闭鉴权） | B | 后端不只监听本机时设 |
 | `MEOW_CORS` | `*` | B | 公网暴露时收紧（§9.1） |
 | `DANMU_SOURCE_ORDER` | 8 个来源 | B | 不配只有 3 个来源 |

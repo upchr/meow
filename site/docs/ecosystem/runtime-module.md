@@ -1,7 +1,7 @@
 # TV 运行时模块
 
-TV 端的 `.js` 源与弹幕聚合需要一个 Node 运行时。它**不是**塞进主包的 `.so`，
-而是一个独立安装的 APK，由宿主动态加载。
+TV 端的 `.js` 源与弹幕聚合需要一个 Node 运行时；`.py` 源需要 Python 运行时。
+它们都**不是**塞进主包的 `.so`，而是独立安装的 APK，由宿主动态加载。
 
 ::: details 为什么必须是独立 APK（开发者）
 
@@ -27,6 +27,7 @@ new DexClassLoader(moduleApk, odexDir, moduleApk + "!/lib/" + abi, hostLoader)
 | 模块 | 作用 | 依赖 |
 |---|---|---|
 | Node 运行时 | 给 drpy 的 `.js` 源提供执行环境 | 无 |
+| Python 运行时 | 给 `.py` 源提供执行环境（CPython 3.12 + pyrt 载荷，Chaquopy 打包） | 无 |
 | 弹幕聚合 | 弹幕源从 1 个变 20+ | Node 运行时 |
 
 模块跑在单独的 `:node` 进程里。宿主通过 `NodeRuntimeApi` 接口调用它，
@@ -47,6 +48,9 @@ ABI 对应关系：
 | 老设备 / 部分投影仪 | `armeabi-v7a` | `tv-node-armeabi-v7a-<node版本>.apk` |
 | 模拟器 / x86 盒子 | `x86_64` | `tv-node-x86_64-<node版本>.apk` |
 
+Python 运行时资产同名规则：`tv-python-<abi>-<版本>.apk`（`tv-python-arm64-v8a` /
+`tv-python-armeabi-v7a` / `tv-python-x86_64`，三个 ABI 与 Node 模块同构）。
+
 装错架构的模块会装不上，或装上后加载失败。
 
 ## 清单字段
@@ -55,10 +59,10 @@ ABI 对应关系：
 
 ```json
 "tv-node-arm64-v8a": {
-  "display_name": "TV 运行时模块（arm64-v8a）",
-  "version": "18.20.4.1",
+  "display_name": "Node 运行时（模块）",
+  "version": "18.20.4.300",
   "platform": ["android-arm64-v8a"],
-  "url": "tv-node-arm64-v8a-18.20.4.1.apk",
+  "url": "tv-node-arm64-v8a-18.20.4.300.apk",
   "sha256": "……",
   "size": 52116312
 }
@@ -72,6 +76,12 @@ ABI 对应关系：
 
 `min_app_version` 与 `min_sdk` 字段已定义，但当前官方清单未输出，客户端的下载前预检
 不会生效；自建清单带上这两个字段时，客户端会在**下载前**比对，不满足直接禁用按钮并说明原因。
+
+★ **模块版本随 App 版本单调**（1.3.0 起，release plan 算好传参）：
+`tv-python = 0.<App 次版本>.<App 修订号>`（1.3.0 → `0.3.0`）、
+`tv-node = <node 版本>.<次版本×100 + 修订号>`（1.3.0 → `18.20.4.300`）。
+旧式 `0.1.<壳补丁>` 在 minor 升级时会倒退（1.3.0 → `0.1.0`），已废弃；
+守门在 `deploy/scripts/check-plugin-versions.ps1`。
 
 ## 版本兼容契约
 

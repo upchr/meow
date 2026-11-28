@@ -38,9 +38,12 @@
 `-Check` 在三个 workflow 都会跑；`Cargo.lock` 未同步时，报错会给出 `cargo update` 的修法。
 
 ::: danger 版本线不统一
-壳和 `apiserver` 插件跟 `client/package.json`；`drpy`（`0.1.0`）、`danmu-api`（`1.0.0`）、
-TV 模块（形如 `18.20.4.x`）是**独立版本线**。`release.yml` 只对壳类 tag 校验“tag 后缀 ==
-package.json”，`plugins-v*` / `tv-plugins-v*` 不校验；不要拿壳版本去推模块 tag。
+壳和 `apiserver` 插件跟 `client/package.json`；`drpy`、`danmu-api`、TV 模块是**独立版本线**。
+`release.yml` 只对壳类 tag 校验“tag 后缀 == package.json”，`plugins-v*` / `tv-plugins-v*`
+不校验；不要拿壳版本去推模块 tag。★ TV 模块版本**随 App 版本单调**（1.3.0 起，release
+plan 算好传参）：`tv-python = 0.<App 次版本>.<App 修订号>`、
+`tv-node = 18.20.4.<次版本×100 + 修订号>`（1.3.0 → `0.3.0` / `18.20.4.300`）。
+旧式 `0.1.<壳补丁>` 会在 minor 升级时倒退，已废弃；守门在 `check-plugin-versions.ps1`。
 :::
 
 ## 三、tag 与链路的对应

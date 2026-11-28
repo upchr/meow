@@ -54,6 +54,8 @@ services:
       MEOW_PORT: "9979"
       # 用 `-` 而非 `:-`：显式写空串（MEOW_DANMAKU_API=）表示"不用聚合服务"，
       MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://drpy:9330}
+      # .py 源 → pyrt（宿主未配 pyRuntimeAddr 时回落 jsRuntime，兼容老单地址部署）
+      MEOW_PY_RUNTIME: ${MEOW_PY_RUNTIME-http://pyrt:19331}
       # `:-` 会把空串当未设置，置空就失效了。
       MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
       # 写操作令牌：保护收藏/进度/片库删除/缓存清理/配置导入等写端点。
@@ -133,10 +135,28 @@ services:
     environment:
       DRPY_PORT: "9330"
       DRPY_STRIP_REMOTE: "1"
-      # 容器间互信：pyrt 从 docker 网桥（172.x）转发 .js 过来，源地址永远不是回环。
+      # 容器间互信：apiserver / pyrt 从 docker 网桥（172.x）过来，源地址永远不是回环。
       # ★ 安全性依赖上面的端口只绑 127.0.0.1 —— 否则 DNAT 会让局域网请求也显示成
       #   网桥地址（172.x.0.1），私有网段判定就变成"谁都能执行脚本"。
       DRPY_TRUST_PRIVATE: "1"
+    restart: unless-stopped
+    networks: [meow]
+
+  # Python 源运行时（.py）：apiserver 通过 MEOW_PY_RUNTIME 指向它。
+  # 独立版本线；没挂 py-scripts 卷时 .py 源会在调用时报 "py script not found"。
+  pyrt:
+    logging: *meow-logging
+    image: ${PYRT_IMAGE:-chrplus/meow-pyrt:${PYRT_VERSION:-latest}}
+    container_name: meow-pyrt
+    ports:
+      - "${PYRT_PORT:-30014}:19331"
+    volumes:
+      - ../../data/py-scripts:/data/py-scripts
+    environment:
+      PYRT_PORT: "19331"
+      PYRT_BIND: "0.0.0.0"
+      PYRT_SCRIPTS: /data/py-scripts
+      PYRT_DRPY: http://drpy:9330
     restart: unless-stopped
     networks: [meow]
 

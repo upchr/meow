@@ -50,7 +50,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 | 出口 | 判据 | 定义位置 | 谁在用 |
 |---|---|---|---|
 | `data-shell='tv'` | `window.meowTv` 桥存在，或 UA `MeowTV`（仅首屏兜底） | `compat/shell.ts` `isTvShell()`；写入在 `compat/deviceProfile.ts` | 菜单键、返回键、设置页端分区、更新中心 fpk 排除 |
-| `hasTvModule()` | `meowTv.moduleCheck` 是函数（**能力，不是身份**） | `compat/shell.ts` | 更新中心「运行时模块 / 弹幕组件」行、设置页运行时分区 |
+| `hasTvModule()` | `meowTv.moduleCheck` 是函数（**能力，不是身份**） | `compat/shell.ts` | 更新中心「Node / Python 运行时 / 弹幕组件」行、设置页运行时分区 |
 | `data-shell='ios'` | `window.meowIos` 桥存在（**只看桥，不看 UA**） | `compat/shell.ts` `isIosShell()`；写入在 `compat/deviceProfile.ts` | 设置页「后端地址」改成只读（iOS 的后端是 App 进程内的 JVM 网关，改地址 = 把 App 指向别人的后端） |
 | `data-shell='tauri'` | `__TAURI_INTERNALS__` / `__TAURI__` | `compat/shell.ts` `isDesktopShell()`（`api/index.ts` 的 `isDesktop()` 只是别名） | base 解析、插件管理、桌面行为 |
 | `currentPlatform()` | 桌面 → `meowTv.appUpdaterPlatform()` → web（**会话内缓存**） | `api/appUpdate.ts` | 更新包匹配（windows-x64 / android-arm64 / x86_64 / armv7 / web） |
@@ -302,7 +302,7 @@ Promise），TV 的壳走 `evaluateJavascript`（同步回调，拿不到 Promis
 | 本地网关 | `localGatewayRunning` / `startLocalGateway`(×2) / `startScan` / `scanRunning` / `scanResult` | 端内 9978 网关与局域网后端扫描 |
 | 推送 | `pushRunning` / `togglePush` / `pushToken` | 推送/远程调试令牌 |
 | 更新 | `appUpdaterPlatform` / `appUpdateManifest` / `appUpdateDownload` / `appUpdateState` / `appUpdateInstall` / `netJobStart` / `netJobPoll` … | APK 更新与网络任务（同步回调 + 轮询） |
-| 模块 | `moduleState` / `moduleSetEnabled` / `moduleCheckFromText` | 运行时模块（tv-node） |
+| 模块 / Python 模块 | `moduleState` / `moduleSetEnabled` / `moduleCheckFromText`；`pyModuleState` / `pyModuleCheck` | 运行时模块（tv-node / tv-python） |
 | 载荷 | `payloadCheck` / `payloadState` | 弹幕载荷 |
 | 调试 | `debugState` / `setDebugEnabled` / `crashLog` / `clearCrashLog` | 远程调试与崩溃日志 |
 
@@ -400,7 +400,7 @@ html.dataset.orient = orient  // 替代四套方向判据
 
 - `isTvShell()`（`compat/shell.ts`）是唯一身份实现；`stores/tvMenu.ts`、
   `stores/updateCenter.ts` 只做 re-export。`hasTvModule()` 是**能力**，
-  更新中心用它决定「运行时模块/弹幕组件」行是否显示。
+  更新中心用它决定「Node / Python 运行时 / 弹幕组件」行是否显示。
 - `isDesktopShell()` 是唯一 PC 身份实现（`api/index.ts` 的 `isDesktop()` 是别名）。
 - 删除 UA 推断作为**显示判据**：`navigator.userAgent` 只允许出现在
   `compat/ua.ts`（`isMeowTvUa` / `isIosPhone` / `isFirefox` / `isAndroid` /

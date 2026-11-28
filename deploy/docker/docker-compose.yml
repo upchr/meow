@@ -119,7 +119,7 @@ services:
     environment:
       DRPY_PORT: "9330"
       DRPY_STRIP_REMOTE: "1"
-      # 容器间互信：pyrt 从 docker 网桥（172.x）转发 .js 过来，源地址永远不是回环。
+      # 容器间互信：apiserver / pyrt 从 docker 网桥（172.x）过来，源地址永远不是回环。
       # ★ 安全性依赖上面的端口只绑 127.0.0.1 —— 否则 DNAT 会让局域网请求也显示成
       #   网桥地址（172.x.0.1），私有网段判定就变成"谁都能执行脚本"。
       DRPY_TRUST_PRIVATE: "1"
@@ -128,16 +128,12 @@ services:
 
   pyrt:
     logging: *meow-logging
-    # Python 源运行时：`.py` 本地执行，`.js` 转发给上面的 drpy。
-    #
-    # ★ 为什么 apiserver 的 jsRuntime 指向它而不是 drpy：pyrt 是"路由器"，
-    #   一个地址同时服务两种源。只指 drpy 时 .py 源会报 "jsRuntime 未配置"
-    #   （文案不准确，但至少能看出是运行时缺失而不是源站挂了）。
-    #
-    # ★ 它与 drpy 是**串联**（pyrt → drpy）。只起 pyrt 不起 drpy 时，.py 正常、
-    #   .js 报 "drpy forward: Connection refused"——可定位，不会静默返空。
+    # Python 源运行时：`.py` 由它本地执行。1.3.0 起分层路由：`.js` 直连 drpy
+    # （MEOW_JS_RUNTIME），`.py` 经 MEOW_PY_RUNTIME 指到 pyrt；宿主未配
+    # pyRuntimeAddr 时回落 jsRuntime，兼容老的单地址部署。
     #
     # ★ 镜像单独一条版本线（与 drpy 同理，不跟 MEOW_VERSION 走）。
+    #   拉取型默认 latest；build.yml 钉具体 tag。
     image: ${PYRT_IMAGE:-chrplus/meow-pyrt:${PYRT_VERSION:-latest}}
     container_name: meow-pyrt
     ports:
